@@ -6,7 +6,34 @@
 
 import React, { useState, useEffect } from 'react';
 import { AuditLog } from '../types';
-import { FileSpreadsheet, CheckCircle2, XCircle, AlertTriangle, RefreshCw, Eye, HelpCircle, Shield, Download, Trash, Search, X, Calendar, Filter } from 'lucide-react';
+import { FileSpreadsheet, CheckCircle2, XCircle, AlertTriangle, RefreshCw, Eye, Shield, Download, Search, X, Calendar, Filter } from 'lucide-react';
+import AlertBanner from './AlertBanner';
+import ModalShell from './ModalShell';
+import StatusPill from './StatusPill';
+import { isWithinDateRange, matchesSearch, uniqueValues } from './filters';
+import { formatTimestamp } from './formatting';
+import { AUDIT_ACTION_BADGE, INTEGRITY_BADGE } from './statusStyles';
+import { CAPTION, PANEL, SECONDARY_BUTTON } from './uiClasses';
+
+type IntegrityType = 'verified' | 'tampered' | 'pending';
+
+const INTEGRITY_ICON: Record<IntegrityType, React.ComponentType<{ className?: string }>> = {
+  verified: Shield,
+  tampered: AlertTriangle,
+  pending: RefreshCw
+};
+
+const INTEGRITY_ICON_CLASS: Record<IntegrityType, string> = {
+  verified: 'w-2.5 h-2.5 text-emerald-600 fill-emerald-100/30',
+  tampered: 'w-2.5 h-2.5 text-red-600 animate-bounce',
+  pending: 'w-2.5 h-2.5 text-amber-600 animate-spin'
+};
+
+const INTEGRITY_LABEL: Record<IntegrityType, string> = {
+  verified: 'Verified',
+  tampered: 'Tamper Detected',
+  pending: 'Offline Pending'
+};
 
 interface AuditLogsViewProps {
   logs: AuditLog[];
@@ -64,53 +91,26 @@ export default function AuditLogsView({
   const [endDate, setEndDate] = useState<string>('');
 
   // Extract unique actors for the filter dropdown
-  const uniqueActors = Array.from(new Set(logs.map(log => log.actorId).filter(Boolean)));
+  const uniqueActors = uniqueValues(logs, 'actorId');
 
   const filteredLogs = logs.filter(log => {
-    // Search text filter
-    if (searchText) {
-      const searchLower = searchText.toLowerCase();
-      const matchSearch = 
-        log.actorId.toLowerCase().includes(searchLower) ||
-        log.reason.toLowerCase().includes(searchLower) ||
-        (log.patientName && log.patientName.toLowerCase().includes(searchLower)) ||
-        (log.patientId && log.patientId.toLowerCase().includes(searchLower)) ||
-        log.id.toLowerCase().includes(searchLower) ||
-        log.hash.toLowerCase().includes(searchLower);
-      if (!matchSearch) return false;
+    if (!matchesSearch(searchText, [log.actorId, log.reason, log.patientName, log.patientId, log.id, log.hash])) {
+      return false;
     }
-
-    // Action filter
     if (selectedAction !== 'ALL' && log.action !== selectedAction) {
       return false;
     }
-
-    // Actor filter
     if (selectedActor !== 'ALL' && log.actorId !== selectedActor) {
       return false;
     }
-
-    // Date filters
-    if (startDate) {
-      const logTime = new Date(log.timestamp).getTime();
-      const startDateTime = new Date(`${startDate}T00:00:00`).getTime();
-      if (logTime < startDateTime) return false;
-    }
-
-    if (endDate) {
-      const logTime = new Date(log.timestamp).getTime();
-      const endDateTime = new Date(`${endDate}T23:59:59`).getTime();
-      if (logTime > endDateTime) return false;
-    }
-
-    return true;
+    return isWithinDateRange(log.timestamp, startDate, endDate);
   });
 
   // Local re-calculation & verification state mapping log IDs to integrity statuses
-  const [localVerification, setLocalVerification] = useState<Record<string, { 
-    verified: boolean; 
-    reason?: string; 
-    type?: 'verified' | 'tampered' | 'pending';
+  const [localVerification, setLocalVerification] = useState<Record<string, {
+    verified: boolean;
+    reason?: string;
+    type?: IntegrityType;
   }>>({});
 
   // Automatically recalculate hash chain on local changes
@@ -120,10 +120,10 @@ export default function AuditLogsView({
     async function runLocalVerification() {
       if (!logs || logs.length === 0) return;
 
-      const result: Record<string, { 
-        verified: boolean; 
-        reason?: string; 
-        type?: 'verified' | 'tampered' | 'pending';
+      const result: Record<string, {
+        verified: boolean;
+        reason?: string;
+        type?: IntegrityType;
       }> = {};
 
       // Reverse logs to chronological order (oldest first) to sequentially verify previous-hash chain linkages
@@ -265,27 +265,10 @@ export default function AuditLogsView({
     downloadAnchor.remove();
   };
 
-  const getActionColor = (action: AuditLog['action']) => {
-    switch (action) {
-      case 'CREATE':
-        return 'bg-emerald-50 text-emerald-700 border-emerald-200/80';
-      case 'UPDATE':
-        return 'bg-blue-50 text-blue-700 border-blue-200/80';
-      case 'VIEW':
-        return 'bg-slate-100 text-slate-600 border-slate-200';
-      case 'SYNC_PUSH':
-        return 'bg-indigo-50 text-indigo-700 border-indigo-200/80';
-      case 'SYNC_PULL':
-        return 'bg-purple-50 text-purple-700 border-purple-200/80';
-      case 'SECURITY_ALERT':
-        return 'bg-amber-50 text-amber-700 border-amber-200/80';
-    }
-  };
-
   return (
     <div className="space-y-6" id="audit-trail-workspace">
       {/* Header compliance stats banner */}
-      <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm flex flex-col md:flex-row justify-between items-start md:items-center gap-4">
+      <div className={`${PANEL} flex flex-col md:flex-row justify-between items-start md:items-center gap-4`}>
         <div className="space-y-1.5">
           <div className="flex items-center gap-2">
             <FileSpreadsheet className="w-5 h-5 text-blue-600" />
@@ -322,31 +305,30 @@ export default function AuditLogsView({
 
       {/* Simulator alerts panel */}
       {tamperAlert && (
-        <div className="bg-amber-50 border border-amber-200 p-4 rounded-xl flex items-start gap-3 animate-fade-in text-xs text-amber-800">
-          <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5 animate-pulse" />
-          <div className="space-y-1.5">
-            <strong className="block font-bold">⚠️ SIMULATED AUDIT TAMPERING ENGAGED</strong>
-            <p>{tamperAlert}</p>
-            <p className="text-[11px] text-amber-700">
-              Click <strong>"Verify Chain Integrity"</strong> to see how the system immediately highlights the breach and traces the tamper block!
-            </p>
-          </div>
-        </div>
+        <AlertBanner
+          variant="warning"
+          iconSizeClass="w-5 h-5"
+          iconClassName="text-amber-600 animate-pulse"
+          title="⚠️ SIMULATED AUDIT TAMPERING ENGAGED"
+          className="p-4 rounded-xl animate-fade-in"
+        >
+          <p>{tamperAlert}</p>
+          <p className="text-[11px] text-amber-700">
+            Click <strong>"Verify Chain Integrity"</strong> to see how the system immediately highlights the breach and traces the tamper block!
+          </p>
+        </AlertBanner>
       )}
 
       {/* Verification Output Banner */}
       {verificationResult && (
-        <div className={`p-5 rounded-xl border flex items-start gap-3 animate-fade-in ${
-          verificationResult.verified
-            ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
-            : 'bg-red-50 border-red-200 text-red-800'
-        }`}>
-          {verificationResult.verified ? (
-            <CheckCircle2 className="w-6 h-6 text-emerald-600 shrink-0 mt-0.5" />
-          ) : (
-            <XCircle className="w-6 h-6 text-red-600 shrink-0 mt-0.5 animate-pulse" />
-          )}
-          <div className="space-y-2 text-xs flex-1">
+        <AlertBanner
+          variant={verificationResult.verified ? 'success' : 'error'}
+          icon={verificationResult.verified ? CheckCircle2 : XCircle}
+          iconSizeClass="w-6 h-6"
+          iconClassName={verificationResult.verified ? 'text-emerald-600' : 'text-red-600 animate-pulse'}
+          className="p-5 rounded-xl animate-fade-in"
+        >
+          <div className="space-y-2">
             <h4 className="font-display font-semibold text-sm">
               {verificationResult.verified 
                 ? 'Cryptographic Audit Trail Secure' 
@@ -367,14 +349,14 @@ export default function AuditLogsView({
               </p>
             )}
           </div>
-        </div>
+        </AlertBanner>
       )}
 
       {/* Ledger Workspace */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Verification Controls Side panel */}
         <div className="space-y-4">
-          <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4 shadow-sm text-xs">
+          <div className={`${PANEL} space-y-4 text-xs`}>
             <h3 className="font-display font-semibold text-slate-800">Compliance Audit Simulator</h3>
             <p className="text-slate-600 leading-relaxed">
               To test the immutability assurances of standard HIPAA log storage, click the button below to direct-inject a simulated unauthorized record edit on the server.
@@ -397,7 +379,7 @@ export default function AuditLogsView({
             </button>
           </div>
 
-          <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-3.5 shadow-sm text-xs">
+          <div className={`${PANEL} space-y-3.5 text-xs`}>
             <h3 className="font-display font-semibold text-slate-800">How the chain works</h3>
             <div className="space-y-3 font-mono text-[11px] text-slate-600">
               <div className="flex items-start gap-2">
@@ -417,9 +399,9 @@ export default function AuditLogsView({
         </div>
 
         {/* Ledger logs timeline column */}
-        <div className="lg:col-span-2 bg-white border border-slate-200 rounded-xl p-5 shadow-sm space-y-4">
+        <div className={`lg:col-span-2 ${PANEL} space-y-4`}>
           <div className="flex justify-between items-center">
-            <span className="text-[10px] uppercase font-mono tracking-wider text-slate-400">
+            <span className={CAPTION}>
               Chained Ledger Blocks ({filteredLogs.length} shown)
             </span>
             <button
@@ -569,31 +551,21 @@ export default function AuditLogsView({
                     <div className="flex flex-wrap justify-between items-start gap-2 text-xs">
                       <div className="space-y-1">
                         <div className="flex flex-wrap items-center gap-1.5">
-                          <span className={`px-2 py-0.5 rounded text-[9px] font-bold font-mono border uppercase ${getActionColor(log.action)}`}>
+                          <span className={`px-2 py-0.5 rounded text-[9px] font-bold font-mono border uppercase ${AUDIT_ACTION_BADGE[log.action]}`}>
                             {log.action}
                           </span>
                           <span className="text-slate-700 font-medium">Block Index #{displayIndex}</span>
                         
                         {/* Real-time local verification status badge */}
-                        {localStatus && (
-                          <span 
-                            className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold border transition-colors select-none ${
-                              localStatus.type === 'verified'
-                                ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                                : localStatus.type === 'tampered'
-                                ? 'bg-red-50 text-red-700 border-red-200'
-                                : 'bg-amber-50 text-amber-700 border-amber-200'
-                            }`} 
-                            title={localStatus.reason} 
+                        {localStatus?.type && (
+                          <StatusPill
+                            className={INTEGRITY_BADGE[localStatus.type]}
+                            icon={INTEGRITY_ICON[localStatus.type]}
+                            iconClassName={INTEGRITY_ICON_CLASS[localStatus.type]}
+                            label={INTEGRITY_LABEL[localStatus.type]}
+                            title={localStatus.reason}
                             id={`local-integrity-badge-${log.id}`}
-                          >
-                            {localStatus.type === 'verified' && <Shield className="w-2.5 h-2.5 text-emerald-600 fill-emerald-100/30" />}
-                            {localStatus.type === 'tampered' && <AlertTriangle className="w-2.5 h-2.5 text-red-600 animate-bounce" />}
-                            {localStatus.type === 'pending' && <RefreshCw className="w-2.5 h-2.5 text-amber-600 animate-spin" />}
-                            {localStatus.type === 'verified' && 'Verified'}
-                            {localStatus.type === 'tampered' && 'Tamper Detected'}
-                            {localStatus.type === 'pending' && 'Offline Pending'}
-                          </span>
+                          />
                         )}
 
                         {isCorrupted && !isLocalTampered && (
@@ -608,7 +580,7 @@ export default function AuditLogsView({
                     </div>
 
                     <div className="text-right text-[10px] font-mono text-slate-400">
-                      <div>{new Date(log.timestamp).toLocaleString()}</div>
+                      <div>{formatTimestamp(log.timestamp)}</div>
                       <div>Actor: {log.actorId} <span className="text-slate-500">({log.actorRole})</span></div>
                     </div>
                   </div>
@@ -644,64 +616,51 @@ export default function AuditLogsView({
 
       {/* SNAPSHOT VIEWER MODAL */}
       {selectedLogJson && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-4 animate-fade-in">
-          <div className="bg-white border border-slate-200 w-full max-w-xl rounded-xl p-6 shadow-2xl space-y-4">
-            <div className="flex justify-between items-start border-b border-slate-200 pb-3">
-              <div className="space-y-0.5">
-                <h4 className="font-display font-semibold text-sm text-slate-850 uppercase">
-                  Audit Snapshot Details
-                </h4>
-                <p className="text-[11px] text-slate-500 font-mono">
-                  BLOCK ID: {selectedLogJson.id}
-                </p>
-              </div>
-              <button
-                onClick={() => setSelectedLogJson(null)}
-                className="text-slate-400 hover:text-slate-600 transition"
-              >
-                ✖
-              </button>
-            </div>
-
-            <div className="space-y-4 text-xs font-mono max-h-[350px] overflow-y-auto">
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-1">
-                  <span className="text-slate-400 uppercase tracking-wide block text-[10px]">BEFORE STATE SNAPSHOT</span>
-                  <pre className="bg-slate-50 p-3 rounded-lg border border-slate-200 overflow-x-auto text-[10px] text-slate-700 leading-relaxed max-h-56">
-                    {selectedLogJson.beforeState 
-                      ? JSON.stringify(JSON.parse(selectedLogJson.beforeState), null, 2) 
-                      : 'null (Genesis/Create Action)'}
-                  </pre>
-                </div>
-
-                <div className="space-y-1">
-                  <span className="text-slate-400 uppercase tracking-wide block text-[10px]">AFTER STATE SNAPSHOT</span>
-                  <pre className="bg-slate-50 p-3 rounded-lg border border-slate-200 overflow-x-auto text-[10px] text-blue-700/90 leading-relaxed max-h-56">
-                    {selectedLogJson.afterState 
-                      ? JSON.stringify(JSON.parse(selectedLogJson.afterState), null, 2) 
-                      : 'null (View/Read Action)'}
-                  </pre>
-                </div>
+        <ModalShell
+          title={<span className="uppercase">Audit Snapshot Details</span>}
+          subtitle={<span className="font-mono">BLOCK ID: {selectedLogJson.id}</span>}
+          onClose={() => setSelectedLogJson(null)}
+          maxWidthClass="max-w-xl"
+          dividedHeader
+        >
+          <div className="space-y-4 text-xs font-mono max-h-[350px] overflow-y-auto">
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-1">
+                <span className="text-slate-400 uppercase tracking-wide block text-[10px]">BEFORE STATE SNAPSHOT</span>
+                <pre className="bg-slate-50 p-3 rounded-lg border border-slate-200 overflow-x-auto text-[10px] text-slate-700 leading-relaxed max-h-56">
+                  {selectedLogJson.beforeState 
+                    ? JSON.stringify(JSON.parse(selectedLogJson.beforeState), null, 2) 
+                    : 'null (Genesis/Create Action)'}
+                </pre>
               </div>
 
-              <div className="bg-slate-50 p-3 rounded-lg border border-slate-200 space-y-1 text-[11px] text-slate-800">
-                <p className="text-slate-400 font-bold">DIGITAL ANCHOR BLOCK DETAILS:</p>
-                <p><span className="text-slate-400">Actor:</span> {selectedLogJson.actorId} ({selectedLogJson.actorRole})</p>
-                <p><span className="text-slate-400">Timestamp:</span> {selectedLogJson.timestamp}</p>
-                <p><span className="text-slate-400">Reason:</span> {selectedLogJson.reason}</p>
+              <div className="space-y-1">
+                <span className="text-slate-400 uppercase tracking-wide block text-[10px]">AFTER STATE SNAPSHOT</span>
+                <pre className="bg-slate-50 p-3 rounded-lg border border-slate-200 overflow-x-auto text-[10px] text-blue-700/90 leading-relaxed max-h-56">
+                  {selectedLogJson.afterState 
+                    ? JSON.stringify(JSON.parse(selectedLogJson.afterState), null, 2) 
+                    : 'null (View/Read Action)'}
+                </pre>
               </div>
             </div>
 
-            <div className="pt-2">
-              <button
-                onClick={() => setSelectedLogJson(null)}
-                className="w-full py-2 bg-white hover:bg-slate-50 border border-slate-250 text-slate-700 text-xs font-medium rounded-lg transition"
-              >
-                Close Snapshot Reviewer
-              </button>
+            <div className="bg-slate-50 p-3 rounded-lg border border-slate-200 space-y-1 text-[11px] text-slate-800">
+              <p className="text-slate-400 font-bold">DIGITAL ANCHOR BLOCK DETAILS:</p>
+              <p><span className="text-slate-400">Actor:</span> {selectedLogJson.actorId} ({selectedLogJson.actorRole})</p>
+              <p><span className="text-slate-400">Timestamp:</span> {selectedLogJson.timestamp}</p>
+              <p><span className="text-slate-400">Reason:</span> {selectedLogJson.reason}</p>
             </div>
           </div>
-        </div>
+
+          <div className="pt-2">
+            <button
+              onClick={() => setSelectedLogJson(null)}
+              className={`w-full py-2 ${SECONDARY_BUTTON} text-xs`}
+            >
+              Close Snapshot Reviewer
+            </button>
+          </div>
+        </ModalShell>
       )}
     </div>
   );

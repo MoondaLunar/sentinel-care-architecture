@@ -22,6 +22,13 @@ import {
   Copy,
   Check
 } from 'lucide-react';
+import AlertBanner from './AlertBanner';
+import { ApiError, requestJson } from './apiClient';
+import { formatTimestamp } from './formatting';
+import { GDPR_STATUS_BADGE, GDPR_STATUS_LABEL_OFFICER, GDPR_STATUS_LABEL_PATIENT, GDPR_TIMELINE_DOT } from './statusStyles';
+import { FIELD_LABEL, INPUT, INPUT_MONO, PRIMARY_BUTTON, TEXTAREA } from './uiClasses';
+
+const GDPR_STATUS_PILL = 'px-2.5 py-1 rounded text-[10px] font-mono uppercase tracking-wider font-bold';
 
 interface GDPRManagerProps {
   currentUser: UserSession;
@@ -69,16 +76,13 @@ export default function GDPRManager({
     setIsLoading(true);
     setError(null);
     try {
-      const res = await fetch('/api/gdpr-requests');
-      if (res.ok) {
-        const data = await res.json();
-        // Display newest requests first
-        setRequests(data.reverse());
-      } else {
-        setError('Failed to load GDPR requests from server.');
-      }
+      const data = await requestJson<GDPRDeletionRequest[]>('/api/gdpr-requests', {
+        errorMessage: 'Failed to load GDPR requests from server.'
+      });
+      // Display newest requests first
+      setRequests([...data].reverse());
     } catch (err) {
-      setError('Failed to connect to backend for GDPR data.');
+      setError(err instanceof ApiError ? err.message : 'Failed to connect to backend for GDPR data.');
     } finally {
       setIsLoading(false);
     }
@@ -103,35 +107,26 @@ export default function GDPRManager({
     }
 
     try {
-      const res = await fetch('/api/gdpr-requests', {
+      const newReq = await requestJson<GDPRDeletionRequest>('/api/gdpr-requests', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-User-Role': currentUser.role,
-          'X-User-Id': currentUser.userId
-        },
-        body: JSON.stringify({
+        actor: currentUser,
+        body: {
           patientId: targetPatient.id,
           patientName: targetPatient.name,
           requesterEmail,
           reason: erasureReason
-        })
+        },
+        errorMessage: 'Failed to submit GDPR deletion request.'
       });
 
-      if (res.ok) {
-        const newReq = await res.json();
-        setSuccessRequest(newReq);
-        // Reset form
-        setSelectedPatientId('');
-        setRequesterEmail('');
-        setErasureReason('');
-        onLogAudit('SECURITY_ALERT', `Submitted GDPR Article 17 Erasure request for patient ${targetPatient.name} (ID: ${targetPatient.id})`);
-      } else {
-        const errData = await res.json();
-        setError(errData.error || 'Failed to submit GDPR deletion request.');
-      }
+      setSuccessRequest(newReq);
+      // Reset form
+      setSelectedPatientId('');
+      setRequesterEmail('');
+      setErasureReason('');
+      onLogAudit('SECURITY_ALERT', `Submitted GDPR Article 17 Erasure request for patient ${targetPatient.name} (ID: ${targetPatient.id})`);
     } catch (err) {
-      setError('Connection to compliance server failed.');
+      setError(err instanceof ApiError ? err.message : 'Connection to compliance server failed.');
     } finally {
       setSubmitting(false);
     }
@@ -148,17 +143,14 @@ export default function GDPRManager({
     setVerifiedAuditLog(null);
 
     try {
-      const res = await fetch(`/api/gdpr-requests/verify/${verificationInput.trim()}`);
-      if (res.ok) {
-        const data = await res.json();
-        setVerifiedRequest(data.request);
-        setVerifiedAuditLog(data.auditLog);
-      } else {
-        const errData = await res.json();
-        setVerificationError(errData.error || 'No matching GDPR deletion record was found for this code.');
-      }
+      const data = await requestJson<{ request: GDPRDeletionRequest; auditLog: AuditLog | null }>(
+        `/api/gdpr-requests/verify/${verificationInput.trim()}`,
+        { errorMessage: 'No matching GDPR deletion record was found for this code.' }
+      );
+      setVerifiedRequest(data.request);
+      setVerifiedAuditLog(data.auditLog);
     } catch (err) {
-      setVerificationError('Error connecting to the compliance server.');
+      setVerificationError(err instanceof ApiError ? err.message : 'Error connecting to the compliance server.');
     } finally {
       setVerifying(false);
     }
@@ -178,30 +170,19 @@ export default function GDPRManager({
     }
 
     try {
-      const res = await fetch(`/api/gdpr-requests/${requestId}/status`, {
+      await requestJson(`/api/gdpr-requests/${requestId}/status`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-User-Role': currentUser.role,
-          'X-User-Id': currentUser.userId
-        },
-        body: JSON.stringify({
-          status,
-          comment: actionComment
-        })
+        actor: currentUser,
+        body: { status, comment: actionComment },
+        errorMessage: 'Failed to update request status.'
       });
 
-      if (res.ok) {
-        setActionComment('');
-        await fetchRequests();
-        await triggerRefreshPatients();
-        onLogAudit('SECURITY_ALERT', `GDPR deletion request status updated to ${status} for Request ID ${requestId}`);
-      } else {
-        const errData = await res.json();
-        setActionError(errData.error || 'Failed to update request status.');
-      }
+      setActionComment('');
+      await fetchRequests();
+      await triggerRefreshPatients();
+      onLogAudit('SECURITY_ALERT', `GDPR deletion request status updated to ${status} for Request ID ${requestId}`);
     } catch (err) {
-      setActionError('Connection failure.');
+      setActionError(err instanceof ApiError ? err.message : 'Connection failure.');
     } finally {
       setActioningId(null);
     }
@@ -274,10 +255,9 @@ export default function GDPRManager({
             </div>
 
             {error && (
-              <div className="text-xs text-red-700 bg-red-50 border border-red-200 p-3 rounded-lg flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4 shrink-0 text-red-500" />
+              <AlertBanner variant="error" icon={AlertTriangle}>
                 <span>{error}</span>
-              </div>
+              </AlertBanner>
             )}
 
             {successRequest && (
@@ -313,12 +293,12 @@ export default function GDPRManager({
 
             <form onSubmit={handleSubmitRequest} className="space-y-4 text-xs">
               <div className="space-y-1.5">
-                <label className="text-slate-655 font-semibold">Select Patient File to Erase *</label>
+                <label className={`${FIELD_LABEL} font-semibold`}>Select Patient File to Erase *</label>
                 <select
                   required
                   value={selectedPatientId}
                   onChange={(e) => setSelectedPatientId(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-800 focus:outline-none focus:border-slate-350 focus:bg-white"
+                  className={INPUT}
                 >
                   <option value="">-- Choose patient directory file --</option>
                   {patients.map(p => (
@@ -330,7 +310,7 @@ export default function GDPRManager({
               </div>
 
               <div className="space-y-1.5">
-                <label className="text-slate-655 font-semibold">Requester Contact Email Address *</label>
+                <label className={`${FIELD_LABEL} font-semibold`}>Requester Contact Email Address *</label>
                 <div className="relative">
                   <Mail className="absolute left-3 top-2.5 w-4 h-4 text-slate-400" />
                   <input
@@ -339,20 +319,20 @@ export default function GDPRManager({
                     placeholder="patient@example.com"
                     value={requesterEmail}
                     onChange={(e) => setRequesterEmail(e.target.value)}
-                    className="w-full bg-slate-50 border border-slate-200 rounded-lg pl-9 pr-3 py-2 text-slate-800 focus:outline-none focus:border-slate-350 focus:bg-white"
+                    className={`${INPUT} pl-9`}
                   />
                 </div>
               </div>
 
               <div className="space-y-1.5">
-                <label className="text-slate-655 font-semibold">GDPR Right to Be Forgotten Reason / Justification *</label>
+                <label className={`${FIELD_LABEL} font-semibold`}>GDPR Right to Be Forgotten Reason / Justification *</label>
                 <textarea
                   required
                   rows={4}
                   placeholder="State the reason under GDPR Article 17 (e.g. 'Data is no longer necessary for the purposes of clinical evaluation, patient revoked consent, etc.')"
                   value={erasureReason}
                   onChange={(e) => setErasureReason(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-800 focus:outline-none focus:border-slate-350 focus:bg-white leading-relaxed"
+                  className={TEXTAREA}
                 />
               </div>
 
@@ -364,7 +344,7 @@ export default function GDPRManager({
               <button
                 type="submit"
                 disabled={submitting}
-                className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg transition shadow-sm flex items-center justify-center gap-1.5 disabled:opacity-50"
+                className={`w-full py-2.5 ${PRIMARY_BUTTON} flex items-center justify-center gap-1.5`}
               >
                 <Trash2 className="w-4 h-4" />
                 {submitting ? 'Registering GDPR Claim...' : 'Register GDPR Deletion Claim'}
@@ -392,7 +372,7 @@ export default function GDPRManager({
                   placeholder="Enter Verification Code (e.g. gdpr_verify_...)"
                   value={verificationInput}
                   onChange={(e) => setVerificationInput(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-lg pl-9 pr-3 py-2 text-slate-800 focus:outline-none focus:border-slate-350 focus:bg-white font-mono"
+                  className={`${INPUT_MONO} pl-9`}
                 />
               </div>
               <button
@@ -405,10 +385,9 @@ export default function GDPRManager({
             </form>
 
             {verificationError && (
-              <div className="text-xs text-red-700 bg-red-50 border border-red-200 p-3 rounded-lg flex items-center gap-2">
-                <XCircle className="w-4 h-4 text-red-500 shrink-0" />
+              <AlertBanner variant="error">
                 <span>{verificationError}</span>
-              </div>
+              </AlertBanner>
             )}
 
             {/* VERIFIED REQUEST DETAIL CONTAINER */}
@@ -421,23 +400,15 @@ export default function GDPRManager({
                     <span className="text-[10px] text-slate-450 block font-mono">Patient ID: {verifiedRequest.patientId}</span>
                   </div>
 
-                  <span className={`px-2.5 py-1 rounded text-[10px] font-mono uppercase tracking-wider font-bold ${
-                    verifiedRequest.status === 'PENDING' ? 'bg-amber-50 text-amber-700 border border-amber-200' :
-                    verifiedRequest.status === 'VERIFIED' ? 'bg-blue-50 text-blue-700 border border-blue-200 font-bold' :
-                    verifiedRequest.status === 'COMPLETED' ? 'bg-emerald-50 text-emerald-800 border border-emerald-250 font-bold' :
-                    'bg-slate-100 text-slate-600 border border-slate-250'
-                  }`}>
-                    {verifiedRequest.status === 'PENDING' && 'Pending Review'}
-                    {verifiedRequest.status === 'VERIFIED' && 'Identity Verified'}
-                    {verifiedRequest.status === 'COMPLETED' && 'COMPLETED (Erased)'}
-                    {verifiedRequest.status === 'REJECTED_RETAINED' && 'Rejected / Held'}
+                  <span className={`${GDPR_STATUS_PILL} ${GDPR_STATUS_BADGE[verifiedRequest.status]}`}>
+                    {GDPR_STATUS_LABEL_PATIENT[verifiedRequest.status]}
                   </span>
                 </div>
 
                 <div className="grid grid-cols-2 gap-3 text-[11px]">
                   <div>
                     <span className="text-slate-400 block font-mono uppercase text-[9px] tracking-wide">Request Date</span>
-                    <span className="text-slate-700 font-medium">{new Date(verifiedRequest.requestDate).toLocaleString()}</span>
+                    <span className="text-slate-700 font-medium">{formatTimestamp(verifiedRequest.requestDate)}</span>
                   </div>
                   <div>
                     <span className="text-slate-400 block font-mono uppercase text-[9px] tracking-wide">Contact Registered</span>
@@ -465,7 +436,7 @@ export default function GDPRManager({
                     <div className="bg-white border border-emerald-150 p-3 rounded-lg space-y-2 font-mono text-[10px] text-slate-600 select-all">
                       <div>
                         <span className="text-[9px] text-slate-400 block uppercase">ERASURE TIMESTAMP</span>
-                        <strong>{verifiedRequest.completedAt ? new Date(verifiedRequest.completedAt).toLocaleString() : 'N/A'}</strong>
+                        <strong>{verifiedRequest.completedAt ? formatTimestamp(verifiedRequest.completedAt) : 'N/A'}</strong>
                       </div>
                       <div className="pt-1 border-t border-slate-100">
                         <span className="text-[9px] text-slate-400 block uppercase">BLOCK AUDIT SIGNATURE REFERENCED</span>
@@ -522,13 +493,9 @@ export default function GDPRManager({
                     {verifiedRequest.statusLog.map((log, index) => (
                       <div key={index} className="relative text-[11px] leading-normal">
                         {/* Dot marker */}
-                        <div className={`absolute -left-[21px] top-1.5 w-2.5 h-2.5 rounded-full border border-white ${
-                          log.status === 'PENDING' ? 'bg-amber-500' :
-                          log.status === 'VERIFIED' ? 'bg-blue-500 animate-pulse' :
-                          log.status === 'COMPLETED' ? 'bg-emerald-500' : 'bg-slate-400'
-                        }`} />
+                        <div className={`absolute -left-[21px] top-1.5 w-2.5 h-2.5 rounded-full border border-white ${GDPR_TIMELINE_DOT[log.status]}`} />
                         <div className="flex items-center gap-2 text-slate-400 font-mono text-[9.5px]">
-                          <span>{new Date(log.timestamp).toLocaleString()}</span>
+                          <span>{formatTimestamp(log.timestamp)}</span>
                           <span>•</span>
                           <span className="font-semibold text-slate-500">{log.performedBy}</span>
                         </div>
@@ -548,15 +515,17 @@ export default function GDPRManager({
           ======================================================= */}
       {activeSubMode === 'clinician' && (
         <div className="space-y-6 animate-fade-in text-xs">
-          <div className="bg-blue-50/50 border border-blue-200 p-4 rounded-xl flex items-start gap-3">
-            <Shield className="w-5 h-5 text-blue-600 shrink-0 mt-0.5" />
-            <div className="space-y-1">
-              <strong className="text-blue-900 block font-semibold">GDPR Officer Administrative Instructions</strong>
-              <p className="text-slate-600 leading-relaxed text-[11px]">
-                Under GDPR Article 17, clinicians must (1) verify the identity of the requester to avoid data leaks, (2) determine if any medical obligations require retention (legal preservation holds), and (3) execute secure physical deletion from the EMR or record the hold reason. Every status transition creates a permanent cryptographic footprint.
-              </p>
-            </div>
-          </div>
+          <AlertBanner
+            variant="info"
+            icon={Shield}
+            iconSizeClass="w-5 h-5"
+            title={<span className="text-blue-900">GDPR Officer Administrative Instructions</span>}
+            className="p-4 rounded-xl"
+          >
+            <p className="text-slate-600 leading-relaxed text-[11px]">
+              Under GDPR Article 17, clinicians must (1) verify the identity of the requester to avoid data leaks, (2) determine if any medical obligations require retention (legal preservation holds), and (3) execute secure physical deletion from the EMR or record the hold reason. Every status transition creates a permanent cryptographic footprint.
+            </p>
+          </AlertBanner>
 
           {isLoading ? (
             <div className="text-center py-12 flex justify-center items-center gap-2 text-slate-450 font-medium">
@@ -587,16 +556,8 @@ export default function GDPRManager({
                       </div>
 
                       <div className="flex items-center gap-2">
-                        <span className={`px-2.5 py-1 rounded text-[10px] font-mono uppercase tracking-wider font-bold ${
-                          req.status === 'PENDING' ? 'bg-amber-50 text-amber-700 border border-amber-200' :
-                          req.status === 'VERIFIED' ? 'bg-blue-50 text-blue-700 border border-blue-200' :
-                          req.status === 'COMPLETED' ? 'bg-emerald-50 text-emerald-800 border border-emerald-250 font-bold' :
-                          'bg-slate-100 text-slate-600 border border-slate-200'
-                        }`}>
-                          {req.status === 'PENDING' && 'Pending Identity verification'}
-                          {req.status === 'VERIFIED' && 'Verified (Erasure Approved)'}
-                          {req.status === 'COMPLETED' && 'Completed (Erased)'}
-                          {req.status === 'REJECTED_RETAINED' && 'Rejected (Legal Hold)'}
+                        <span className={`${GDPR_STATUS_PILL} ${GDPR_STATUS_BADGE[req.status]}`}>
+                          {GDPR_STATUS_LABEL_OFFICER[req.status]}
                         </span>
                       </div>
                     </div>
@@ -605,7 +566,7 @@ export default function GDPRManager({
                       <div className="space-y-1 md:col-span-1">
                         <span className="text-[9px] uppercase font-mono text-slate-400 block tracking-wide">Requester details</span>
                         <div className="font-medium text-slate-700">{req.requesterEmail}</div>
-                        <div className="text-slate-450 mt-1">Submitted on: {new Date(req.requestDate).toLocaleString()}</div>
+                        <div className="text-slate-450 mt-1">Submitted on: {formatTimestamp(req.requestDate)}</div>
                       </div>
 
                       <div className="space-y-1 md:col-span-2">
@@ -623,9 +584,9 @@ export default function GDPRManager({
                         </label>
 
                         {actionError && (
-                          <p className="text-[11px] text-red-700 bg-red-50 p-2 border border-red-100 rounded">
+                          <AlertBanner variant="error" icon={null} className="p-2 text-[11px]">
                             ⚠️ {actionError}
-                          </p>
+                          </AlertBanner>
                         )}
 
                         <div className="space-y-2">
@@ -638,7 +599,7 @@ export default function GDPRManager({
                               setActionComment(e.target.value);
                               setActionError(null);
                             }}
-                            className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-800 text-xs focus:outline-none focus:border-slate-350 focus:bg-white focus:ring-1 focus:ring-blue-500"
+                            className={`${INPUT} text-xs`}
                           />
                         </div>
 
@@ -698,7 +659,7 @@ export default function GDPRManager({
                               <span className="font-semibold text-slate-700">{log.comment}</span>
                               <div className="text-slate-400">By: {log.performedBy}</div>
                             </div>
-                            <span className="text-slate-400 text-right">{new Date(log.timestamp).toLocaleString()}</span>
+                            <span className="text-slate-400 text-right">{formatTimestamp(log.timestamp)}</span>
                           </div>
                         ))}
                       </div>

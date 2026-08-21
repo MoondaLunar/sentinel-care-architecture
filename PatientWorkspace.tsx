@@ -5,7 +5,47 @@
 
 import React, { useState } from 'react';
 import { Patient, UserSession, ConsultModeState } from '../types';
-import { Search, UserPlus, Edit3, Shield, User, AlertCircle, Eye, EyeOff, Check, AlertTriangle, FileText, Calendar, Lock } from 'lucide-react';
+import { Search, UserPlus, Edit3, Shield, User, FileText, Calendar, Lock } from 'lucide-react';
+import PatientRecordForm, { PatientFormValues } from './PatientRecordForm';
+import { formatTimestamp } from './formatting';
+import { matchesSearch } from './filters';
+import { PANEL } from './uiClasses';
+
+const EMPTY_FORM: PatientFormValues = {
+  name: '',
+  birthdate: '',
+  ssn: '',
+  diagnosis: '',
+  medications: '',
+  notes: ''
+};
+
+const FIELD_PANEL = 'bg-slate-50/50 p-4 rounded-lg border border-slate-200 hover:bg-white transition-colors';
+
+interface ClinicalFieldProps {
+  label: React.ReactNode;
+  visible: boolean;
+  maskedValue: string;
+  maskedTone?: 'muted' | 'locked';
+  wide?: boolean;
+  spacing?: string;
+  children: React.ReactNode;
+}
+
+function ClinicalField({ label, visible, maskedValue, maskedTone = 'locked', wide, spacing = 'space-y-1', children }: ClinicalFieldProps) {
+  return (
+    <div className={`${FIELD_PANEL} ${spacing}${wide ? ' md:col-span-2' : ''}`}>
+      <span className="text-slate-400 uppercase tracking-wide block text-[10px] font-mono font-bold">{label}</span>
+      {visible ? children : maskedTone === 'muted' ? (
+        <span className="text-slate-450 font-mono italic block pt-0.5 select-none">{maskedValue}</span>
+      ) : (
+        <span className="text-red-700 font-mono text-[10px] block pt-0.5 select-none flex items-center gap-1 font-semibold">
+          <Lock className="w-3 h-3 text-red-600" /> {maskedValue}
+        </span>
+      )}
+    </div>
+  );
+}
 
 interface PatientWorkspaceProps {
   patients: Patient[];
@@ -33,13 +73,10 @@ export default function PatientWorkspace({
   const [formError, setFormError] = useState<string | null>(null);
 
   // Form Fields
-  const [name, setName] = useState('');
-  const [birthdate, setBirthdate] = useState('');
-  const [ssn, setSsn] = useState('');
-  const [diagnosis, setDiagnosis] = useState('');
-  const [medications, setMedications] = useState('');
-  const [notes, setNotes] = useState('');
+  const [form, setForm] = useState<PatientFormValues>(EMPTY_FORM);
   const [reason, setReason] = useState('');
+
+  const updateForm = (patch: Partial<PatientFormValues>) => setForm(prev => ({ ...prev, ...patch }));
 
   // Access filter: check if a specific field is readable under RBAC & Consult mode
   const canReadField = (field: keyof ConsultModeState['selectedFields']): boolean => {
@@ -76,12 +113,7 @@ export default function PatientWorkspace({
     setSelectedPatient(null);
     setFormError(null);
 
-    setName('');
-    setBirthdate('');
-    setSsn('');
-    setDiagnosis('');
-    setMedications('');
-    setNotes('');
+    setForm(EMPTY_FORM);
     setReason('');
   };
 
@@ -91,12 +123,14 @@ export default function PatientWorkspace({
     setSelectedPatient(patient);
     setFormError(null);
 
-    setName(patient.name);
-    setBirthdate(patient.birthdate);
-    setSsn(patient.ssn);
-    setDiagnosis(patient.diagnosis);
-    setMedications(patient.medications);
-    setNotes(patient.notes);
+    setForm({
+      name: patient.name,
+      birthdate: patient.birthdate,
+      ssn: patient.ssn,
+      diagnosis: patient.diagnosis,
+      medications: patient.medications,
+      notes: patient.notes
+    });
     setReason(''); // Reason must always be typed fresh!
   };
 
@@ -110,7 +144,7 @@ export default function PatientWorkspace({
     e.preventDefault();
     setFormError(null);
 
-    if (!name.trim()) {
+    if (!form.name.trim()) {
       setFormError('Patient full name is required.');
       return;
     }
@@ -120,7 +154,7 @@ export default function PatientWorkspace({
     }
 
     try {
-      await onAddPatient({ name, birthdate, ssn, diagnosis, medications, notes }, reason);
+      await onAddPatient(form, reason);
       setIsCreating(false);
     } catch (err: any) {
       setFormError(err.message || 'Failed to create patient.');
@@ -140,7 +174,7 @@ export default function PatientWorkspace({
     try {
       await onUpdatePatient(
         selectedPatient.id,
-        { name, birthdate, ssn, diagnosis, medications, notes },
+        form,
         selectedPatient.version,
         reason
       );
@@ -152,15 +186,12 @@ export default function PatientWorkspace({
     }
   };
 
-  const filteredPatients = patients.filter(p =>
-    p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    p.id.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  const filteredPatients = patients.filter(p => matchesSearch(searchTerm, [p.name, p.id]));
 
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6" id="patients-workspace">
       {/* Patient Directory Directory List Column */}
-      <div className="lg:col-span-1 bg-white border border-slate-200 rounded-xl p-5 shadow-sm flex flex-col space-y-4">
+      <div className={`lg:col-span-1 ${PANEL} flex flex-col space-y-4`}>
         <div className="flex justify-between items-center">
           <span className="text-[10px] font-mono uppercase tracking-wider text-slate-400">
             Secure Registry directory
@@ -231,238 +262,42 @@ export default function PatientWorkspace({
       <div className="lg:col-span-2 space-y-6">
         {/* CREATE FILE SCREEN */}
         {isCreating && (
-          <form onSubmit={handleCreateSubmit} className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm space-y-4 animate-fade-in" id="patient-creation-form">
-            <h3 className="font-display font-semibold text-sm text-slate-800 border-b border-slate-200 pb-2.5">
-              Create New HIPAA Compliant Patient File
-            </h3>
-
-            {formError && (
-              <p className="text-xs text-red-700 bg-red-50 border border-red-200 p-2.5 rounded flex items-center gap-1.5">
-                <AlertCircle className="w-4 h-4 shrink-0 text-red-500" /> {formError}
-              </p>
-            )}
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
-              <div className="space-y-1.5">
-                <label className="text-slate-650 font-medium">Patient Full Name *</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. Amanda Parker"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-800 focus:outline-none focus:border-slate-350 focus:bg-white focus:ring-1 focus:ring-blue-500"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-slate-655 font-medium">Birthdate</label>
-                <input
-                  type="date"
-                  value={birthdate}
-                  onChange={(e) => setBirthdate(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-800 focus:outline-none focus:border-slate-350 focus:bg-white focus:ring-1 focus:ring-blue-500 font-mono"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-slate-655 font-medium font-mono">SSN (Social Security Number)</label>
-                <input
-                  type="text"
-                  placeholder="000-00-0000"
-                  value={ssn}
-                  onChange={(e) => setSsn(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-800 focus:outline-none focus:border-slate-350 focus:bg-white focus:ring-1 focus:ring-blue-500 font-mono"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-slate-655 font-medium">Primary Diagnosis</label>
-                <input
-                  type="text"
-                  placeholder="e.g. Chronic Asthma exacerbation"
-                  value={diagnosis}
-                  onChange={(e) => setDiagnosis(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-800 focus:outline-none focus:border-slate-350 focus:bg-white focus:ring-1 focus:ring-blue-500"
-                />
-              </div>
-            </div>
-
-            <div className="space-y-1.5 text-xs">
-              <label className="text-slate-655 font-medium">Active Medications</label>
-              <input
-                type="text"
-                placeholder="e.g. Albuterol, Fluticasone"
-                value={medications}
-                onChange={(e) => setMedications(e.target.value)}
-                className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-800 focus:outline-none focus:border-slate-350 focus:bg-white focus:ring-1 focus:ring-blue-500"
-              />
-            </div>
-
-            <div className="space-y-1.5 text-xs">
-              <label className="text-slate-655 font-medium">Clinical Practitioner Progress Notes</label>
-              <textarea
-                rows={3}
-                placeholder="Type sensitive physician notes..."
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-800 focus:outline-none focus:border-slate-350 focus:bg-white focus:ring-1 focus:ring-blue-500 leading-relaxed"
-              />
-            </div>
-
-            {/* MANDATORY REASON FOR CHANGE FIELD */}
-            <div className="bg-amber-50/50 border border-amber-200 p-4 rounded-xl space-y-2 text-xs">
-              <label className="text-amber-800 font-bold flex items-center gap-1">
-                <AlertTriangle className="w-4 h-4 text-amber-650 shrink-0" />
-                Mandatory Security Justification *
-              </label>
-              <input
-                type="text"
-                required
-                placeholder="Justification reason for opening this file... (e.g. 'Initial patient intake intake examination')"
-                value={reason}
-                onChange={(e) => setReason(e.target.value)}
-                className="w-full bg-white border border-amber-300 rounded-lg px-3 py-2 text-slate-800 focus:outline-none focus:ring-1 focus:ring-amber-500 placeholder:text-slate-400"
-              />
-              <p className="text-[10px] text-amber-700">
-                To guarantee audit compliance under HIPAA rules, you must enter a justification reason. This is captured directly in the immutable cryptographic ledger.
-              </p>
-            </div>
-
-            <div className="flex gap-3 justify-end pt-2 text-xs">
-              <button
-                type="button"
-                onClick={handleCancelForm}
-                className="px-4 py-2 bg-white hover:bg-slate-50 text-slate-600 font-medium rounded-lg border border-slate-250 transition"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg transition shadow-sm"
-              >
-                Assemble Cryptographic Block
-              </button>
-            </div>
-          </form>
+          <PatientRecordForm
+            id="patient-creation-form"
+            heading="Create New HIPAA Compliant Patient File"
+            submitLabel="Assemble Cryptographic Block"
+            values={form}
+            onChange={updateForm}
+            reason={reason}
+            onReasonChange={setReason}
+            reasonPlaceholder="Justification reason for opening this file... (e.g. 'Initial patient intake intake examination')"
+            showPlaceholders
+            error={formError}
+            onSubmit={handleCreateSubmit}
+            onCancel={handleCancelForm}
+          />
         )}
 
         {/* EDIT FILE SCREEN */}
         {isEditing && (
-          <form onSubmit={handleEditSubmit} className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm space-y-4 animate-fade-in" id="patient-edit-form">
-            <h3 className="font-display font-semibold text-sm text-slate-800 border-b border-slate-200 pb-2.5">
-              Edit File: {selectedPatient?.name} (Current Version: v{selectedPatient?.version})
-            </h3>
-
-            {formError && (
-              <p className="text-xs text-red-700 bg-red-50 border border-red-200 p-2.5 rounded flex items-center gap-1.5">
-                <AlertCircle className="w-4 h-4 shrink-0 text-red-500" /> {formError}
-              </p>
-            )}
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
-              <div className="space-y-1.5">
-                <label className="text-slate-655 font-medium">Patient Full Name *</label>
-                <input
-                  type="text"
-                  required
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-800 focus:outline-none focus:border-slate-350 focus:bg-white focus:ring-1 focus:ring-blue-500"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-slate-655 font-medium">Birthdate</label>
-                <input
-                  type="date"
-                  value={birthdate}
-                  onChange={(e) => setBirthdate(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-800 focus:outline-none focus:border-slate-350 focus:bg-white focus:ring-1 focus:ring-blue-500 font-mono"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-slate-655 font-medium font-mono">SSN (Social Security Number)</label>
-                <input
-                  type="text"
-                  value={ssn}
-                  onChange={(e) => setSsn(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-800 focus:outline-none focus:border-slate-350 focus:bg-white focus:ring-1 focus:ring-blue-500 font-mono"
-                />
-              </div>
-
-              <div className="space-y-1.5">
-                <label className="text-slate-655 font-medium">Primary Diagnosis</label>
-                <input
-                  type="text"
-                  value={diagnosis}
-                  onChange={(e) => setDiagnosis(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-800 focus:outline-none focus:border-slate-350 focus:bg-white focus:ring-1 focus:ring-blue-500"
-                />
-              </div>
-            </div>
-
-            <div className="space-y-1.5 text-xs">
-              <label className="text-slate-655 font-medium">Active Medications</label>
-              <input
-                type="text"
-                value={medications}
-                onChange={(e) => setMedications(e.target.value)}
-                className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-800 focus:outline-none focus:border-slate-350 focus:bg-white focus:ring-1 focus:ring-blue-500"
-              />
-            </div>
-
-            <div className="space-y-1.5 text-xs">
-              <label className="text-slate-655 font-medium">Clinical Practitioner Progress Notes</label>
-              <textarea
-                rows={3}
-                value={notes}
-                onChange={(e) => setNotes(e.target.value)}
-                className="w-full bg-slate-50 border border-slate-200 rounded-lg px-3 py-2 text-slate-800 focus:outline-none focus:border-slate-350 focus:bg-white focus:ring-1 focus:ring-blue-500 leading-relaxed"
-              />
-            </div>
-
-            {/* MANDATORY REASON FOR CHANGE FIELD */}
-            <div className="bg-amber-50/50 border border-amber-200 p-4 rounded-xl space-y-2 text-xs">
-              <label className="text-amber-800 font-bold flex items-center gap-1">
-                <AlertTriangle className="w-4 h-4 text-amber-650 shrink-0" />
-                Mandatory Security Justification *
-              </label>
-              <input
-                type="text"
-                required
-                placeholder="Reason for making clinical changes to this file..."
-                value={reason}
-                onChange={(e) => setReason(e.target.value)}
-                className="w-full bg-white border border-amber-300 rounded-lg px-3 py-2 text-slate-800 focus:outline-none focus:ring-1 focus:ring-amber-500 placeholder:text-slate-400"
-              />
-              <p className="text-[10px] text-amber-700">
-                To guarantee audit compliance under HIPAA rules, you must enter a justification reason. This is captured directly in the immutable cryptographic ledger.
-              </p>
-            </div>
-
-            <div className="flex gap-3 justify-end pt-2 text-xs">
-              <button
-                type="button"
-                onClick={handleCancelForm}
-                className="px-4 py-2 bg-white hover:bg-slate-50 text-slate-655 font-medium rounded-lg border border-slate-250 transition"
-              >
-                Cancel
-              </button>
-              <button
-                type="submit"
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg transition shadow-sm"
-              >
-                Lock Updated Block (v{selectedPatient ? selectedPatient.version + 1 : ''})
-              </button>
-            </div>
-          </form>
+          <PatientRecordForm
+            id="patient-edit-form"
+            heading={`Edit File: ${selectedPatient?.name} (Current Version: v${selectedPatient?.version})`}
+            submitLabel={`Lock Updated Block (v${selectedPatient ? selectedPatient.version + 1 : ''})`}
+            values={form}
+            onChange={updateForm}
+            reason={reason}
+            onReasonChange={setReason}
+            reasonPlaceholder="Reason for making clinical changes to this file..."
+            error={formError}
+            onSubmit={handleEditSubmit}
+            onCancel={handleCancelForm}
+          />
         )}
 
         {/* DETAILED VIEWER SCREEN */}
         {selectedPatient && !isCreating && !isEditing && (
-          <div className="bg-white border border-slate-200 rounded-xl p-6 shadow-sm space-y-6 animate-fade-in" id="patient-detail-card">
+          <div className={`${PANEL} p-6 space-y-6 animate-fade-in`} id="patient-detail-card">
             <div className="flex justify-between items-start border-b border-slate-200 pb-4">
               <div className="space-y-1">
                 <div className="flex items-center gap-2">
@@ -476,7 +311,7 @@ export default function PatientWorkspace({
                 <div className="flex gap-3 text-xs text-slate-400 font-mono">
                   <span>ID: {selectedPatient.id}</span>
                   <span>•</span>
-                  <span>Last Modified: {new Date(selectedPatient.updatedAt).toLocaleString()}</span>
+                  <span>Last Modified: {formatTimestamp(selectedPatient.updatedAt)}</span>
                 </div>
               </div>
 
@@ -503,68 +338,34 @@ export default function PatientWorkspace({
 
             {/* Demographics Field Panels */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
-              {/* DOB Block */}
-              <div className="bg-slate-50/50 p-4 rounded-lg border border-slate-200 hover:bg-white transition-colors space-y-1">
-                <span className="text-slate-400 uppercase tracking-wide block text-[10px] font-mono font-bold">Birthdate</span>
-                {canReadField('birthdate') ? (
-                  <div className="text-slate-800 font-medium flex items-center gap-1.5 pt-0.5">
-                    <Calendar className="w-3.5 h-3.5 text-slate-400" />
-                    {selectedPatient.birthdate || 'Not recorded'}
-                  </div>
-                ) : (
-                  <span className="text-slate-450 font-mono italic block pt-0.5 select-none">{getMaskedValue('birthdate', '')}</span>
-                )}
-              </div>
+              <ClinicalField label="Birthdate" visible={canReadField('birthdate')} maskedValue={getMaskedValue('birthdate', '')} maskedTone="muted">
+                <div className="text-slate-800 font-medium flex items-center gap-1.5 pt-0.5">
+                  <Calendar className="w-3.5 h-3.5 text-slate-400" />
+                  {selectedPatient.birthdate || 'Not recorded'}
+                </div>
+              </ClinicalField>
 
-              {/* SSN Block */}
-              <div className="bg-slate-50/50 p-4 rounded-lg border border-slate-200 hover:bg-white transition-colors space-y-1 relative">
-                <span className="text-slate-400 uppercase tracking-wide block text-[10px] font-mono font-bold">SSN (Social Security)</span>
-                {canReadField('ssn') ? (
-                  <div className="text-slate-800 font-mono tracking-wider pt-0.5 select-all">{selectedPatient.ssn || 'Not recorded'}</div>
-                ) : (
-                  <span className="text-red-700 font-mono text-[10px] tracking-wide block pt-0.5 select-none flex items-center gap-1 font-semibold">
-                    <Lock className="w-3 h-3 text-red-600" /> {getMaskedValue('ssn', '')}
-                  </span>
-                )}
-              </div>
+              <ClinicalField label="SSN (Social Security)" visible={canReadField('ssn')} maskedValue={getMaskedValue('ssn', '')}>
+                <div className="text-slate-800 font-mono tracking-wider pt-0.5 select-all">{selectedPatient.ssn || 'Not recorded'}</div>
+              </ClinicalField>
 
-              {/* Diagnosis Block */}
-              <div className="bg-slate-50/50 p-4 rounded-lg border border-slate-200 hover:bg-white transition-colors space-y-1 md:col-span-2">
-                <span className="text-slate-400 uppercase tracking-wide block text-[10px] font-mono font-bold">Clinical Diagnosis</span>
-                {canReadField('diagnosis') ? (
-                  <div className="text-slate-800 font-medium pt-0.5">{selectedPatient.diagnosis || 'None recorded'}</div>
-                ) : (
-                  <span className="text-red-700 font-mono text-[10px] block pt-0.5 select-none flex items-center gap-1 font-semibold">
-                    <Lock className="w-3 h-3 text-red-600" /> {getMaskedValue('diagnosis', '')}
-                  </span>
-                )}
-              </div>
+              <ClinicalField label="Clinical Diagnosis" visible={canReadField('diagnosis')} maskedValue={getMaskedValue('diagnosis', '')} wide>
+                <div className="text-slate-800 font-medium pt-0.5">{selectedPatient.diagnosis || 'None recorded'}</div>
+              </ClinicalField>
 
-              {/* Medications Block */}
-              <div className="bg-slate-50/50 p-4 rounded-lg border border-slate-200 hover:bg-white transition-colors space-y-1 md:col-span-2">
-                <span className="text-slate-400 uppercase tracking-wide block text-[10px] font-mono font-bold">Active Prescription Regimen</span>
-                {canReadField('medications') ? (
-                  <div className="text-slate-800 font-medium pt-0.5">{selectedPatient.medications || 'None recorded'}</div>
-                ) : (
-                  <span className="text-red-700 font-mono text-[10px] block pt-0.5 select-none flex items-center gap-1 font-semibold">
-                    <Lock className="w-3 h-3 text-red-600" /> {getMaskedValue('medications', '')}
-                  </span>
-                )}
-              </div>
+              <ClinicalField label="Active Prescription Regimen" visible={canReadField('medications')} maskedValue={getMaskedValue('medications', '')} wide>
+                <div className="text-slate-800 font-medium pt-0.5">{selectedPatient.medications || 'None recorded'}</div>
+              </ClinicalField>
 
-              {/* notes Block */}
-              <div className="bg-slate-50/50 p-4 rounded-lg border border-slate-200 hover:bg-white transition-colors space-y-1.5 md:col-span-2">
-                <span className="text-slate-400 uppercase tracking-wide block text-[10px] font-mono flex items-center gap-1 font-bold">
-                  <FileText className="w-3 h-3 text-slate-400" /> Clinician Progress Log
-                </span>
-                {canReadField('notes') ? (
-                  <p className="text-slate-700 leading-relaxed pt-0.5 whitespace-pre-wrap">{selectedPatient.notes || 'No progress notes recorded.'}</p>
-                ) : (
-                  <span className="text-red-700 font-mono text-[10px] block pt-0.5 select-none flex items-center gap-1 font-semibold">
-                    <Lock className="w-3 h-3 text-red-600" /> {getMaskedValue('notes', '')}
-                  </span>
-                )}
-              </div>
+              <ClinicalField
+                label={<span className="flex items-center gap-1"><FileText className="w-3 h-3 text-slate-400" /> Clinician Progress Log</span>}
+                visible={canReadField('notes')}
+                maskedValue={getMaskedValue('notes', '')}
+                spacing="space-y-1.5"
+                wide
+              >
+                <p className="text-slate-700 leading-relaxed pt-0.5 whitespace-pre-wrap">{selectedPatient.notes || 'No progress notes recorded.'}</p>
+              </ClinicalField>
             </div>
 
             <div className="bg-slate-50 border border-slate-200 p-4 rounded-lg flex items-center gap-3 text-[11px] font-mono text-slate-500">
@@ -580,7 +381,7 @@ export default function PatientWorkspace({
 
         {/* DEFAULT STATE: NO SELECTION */}
         {!selectedPatient && !isCreating && !isEditing && (
-          <div className="bg-white border border-slate-200 rounded-xl p-8 text-center text-slate-450 space-y-4 shadow-sm flex flex-col items-center justify-center min-h-[300px]">
+          <div className={`${PANEL} p-8 text-center text-slate-450 space-y-4 flex flex-col items-center justify-center min-h-[300px]`}>
             <Shield className="w-10 h-10 text-slate-300" />
             <div className="space-y-1">
               <span className="font-display font-medium text-slate-700 block text-sm">Patient File Sealed</span>

@@ -5,7 +5,44 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 import { CameraAttentionState, UserSession } from '../types';
-import { Camera, Shield, Eye, ShieldAlert, Zap, EyeOff, Loader2 } from 'lucide-react';
+import { Shield, ShieldAlert, Zap, EyeOff } from 'lucide-react';
+import { CAMERA_STATE_BADGE } from './statusStyles';
+import { CAPTION, INFO_NOTE, PANEL } from './uiClasses';
+
+const PRESET_BUTTON = 'px-2 py-1.5 rounded border text-left flex items-center gap-1.5 transition';
+const PRESET_IDLE = 'bg-slate-50 border-slate-200 text-slate-600 hover:border-slate-300';
+
+const SIMULATION_PRESETS: Array<{
+  state: CameraAttentionState;
+  label: string;
+  activeClass: string;
+  dotClass: string;
+}> = [
+  {
+    state: CameraAttentionState.SAFE_FOCUS,
+    label: 'Normal (Clear Face)',
+    activeClass: 'bg-emerald-50 border-emerald-400 text-emerald-800 font-medium',
+    dotClass: 'bg-emerald-550'
+  },
+  {
+    state: CameraAttentionState.UNCERTAIN,
+    label: 'Low Light / Mask',
+    activeClass: 'bg-amber-50 border-amber-400 text-amber-800 font-medium',
+    dotClass: 'bg-amber-550'
+  },
+  {
+    state: CameraAttentionState.MULTI_PERSON,
+    label: 'Multi-Person Hover',
+    activeClass: 'bg-red-50 border-red-400 text-red-800 font-medium',
+    dotClass: 'bg-red-650 animate-ping'
+  },
+  {
+    state: CameraAttentionState.NO_FACE,
+    label: 'Empty Desk / No Face',
+    activeClass: 'bg-red-50 border-red-400 text-red-800 font-medium',
+    dotClass: 'bg-red-650'
+  }
+];
 
 interface CameraSafetySystemProps {
   onStateChange: (state: CameraAttentionState) => void;
@@ -205,21 +242,8 @@ export default function CameraSafetySystem({
     onLogSecurityBypass(`EMERGENCY BYPASS TRIGGERED: User bypassed vision-based safety screen lock. Clinical urgency override applied.`);
   };
 
-  const getStatusColor = (state: CameraAttentionState) => {
-    switch (state) {
-      case CameraAttentionState.SAFE_FOCUS:
-        return 'border-emerald-200 text-emerald-700 bg-emerald-50';
-      case CameraAttentionState.UNCERTAIN:
-        return 'border-amber-200 text-amber-700 bg-amber-50';
-      case CameraAttentionState.MULTI_PERSON:
-        return 'border-red-200 text-red-700 bg-red-50';
-      case CameraAttentionState.NO_FACE:
-        return 'border-red-300 text-red-700 bg-red-50 animate-pulse';
-    }
-  };
-
   return (
-    <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm space-y-4" id="vision-security-panel">
+    <div className={`${PANEL} space-y-4`} id="vision-security-panel">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Shield className="w-5 h-5 text-blue-600" />
@@ -227,7 +251,7 @@ export default function CameraSafetySystem({
             Vision Attention Safety System
           </h3>
         </div>
-        <span className={`text-[10px] uppercase tracking-wider font-mono px-2.5 py-1 rounded-full border ${getStatusColor(currentState)}`}>
+        <span className={`text-[10px] uppercase tracking-wider font-mono px-2.5 py-1 rounded-full border ${CAMERA_STATE_BADGE[currentState]}`}>
           {currentState.replace('_', ' ')}
         </span>
       </div>
@@ -296,7 +320,7 @@ export default function CameraSafetySystem({
       </div>
 
       {/* Safety System Instructions */}
-      <div className="text-[11px] text-slate-600 leading-relaxed bg-slate-50 p-2.5 rounded border border-slate-200/60 space-y-1">
+      <div className={`${INFO_NOTE} space-y-1`}>
         <p>
           🔒 <strong>HIPAA Patient Privacy Lock:</strong> System automatically monitors the viewport. It dims on low light (PPE/masks), blurs when multiple users hover behind, and triggers a 5-second soft lock if you leave your station.
         </p>
@@ -322,57 +346,20 @@ export default function CameraSafetySystem({
 
       {/* Interactive Environment & Compliance Simulator Board */}
       <div className="border-t border-slate-200 pt-3.5 space-y-2">
-        <span className="text-[10px] font-mono text-slate-400 uppercase tracking-wider block">
+        <span className={`${CAPTION} block`}>
           Compliance Tester & Environment Presets
         </span>
         <div className="grid grid-cols-2 gap-2 text-xs">
-          <button
-            onClick={() => handleSimulate(CameraAttentionState.SAFE_FOCUS)}
-            className={`px-2 py-1.5 rounded border text-left flex items-center gap-1.5 transition ${
-              simulatedState === CameraAttentionState.SAFE_FOCUS
-                ? 'bg-emerald-50 border-emerald-400 text-emerald-800 font-medium'
-                : 'bg-slate-50 border-slate-200 text-slate-600 hover:border-slate-300'
-            }`}
-          >
-            <span className="w-1.5 h-1.5 bg-emerald-550 rounded-full" />
-            Normal (Clear Face)
-          </button>
-
-          <button
-            onClick={() => handleSimulate(CameraAttentionState.UNCERTAIN)}
-            className={`px-2 py-1.5 rounded border text-left flex items-center gap-1.5 transition ${
-              simulatedState === CameraAttentionState.UNCERTAIN
-                ? 'bg-amber-50 border-amber-400 text-amber-800 font-medium'
-                : 'bg-slate-50 border-slate-200 text-slate-600 hover:border-slate-300'
-            }`}
-          >
-            <span className="w-1.5 h-1.5 bg-amber-550 rounded-full" />
-            Low Light / Mask
-          </button>
-
-          <button
-            onClick={() => handleSimulate(CameraAttentionState.MULTI_PERSON)}
-            className={`px-2 py-1.5 rounded border text-left flex items-center gap-1.5 transition ${
-              simulatedState === CameraAttentionState.MULTI_PERSON
-                ? 'bg-red-50 border-red-400 text-red-800 font-medium'
-                : 'bg-slate-50 border-slate-200 text-slate-600 hover:border-slate-300'
-            }`}
-          >
-            <span className="w-1.5 h-1.5 bg-red-650 rounded-full animate-ping" />
-            Multi-Person Hover
-          </button>
-
-          <button
-            onClick={() => handleSimulate(CameraAttentionState.NO_FACE)}
-            className={`px-2 py-1.5 rounded border text-left flex items-center gap-1.5 transition ${
-              simulatedState === CameraAttentionState.NO_FACE
-                ? 'bg-red-50 border-red-400 text-red-800 font-medium'
-                : 'bg-slate-50 border-slate-200 text-slate-600 hover:border-slate-300'
-            }`}
-          >
-            <span className="w-1.5 h-1.5 bg-red-650 rounded-full" />
-            Empty Desk / No Face
-          </button>
+          {SIMULATION_PRESETS.map(preset => (
+            <button
+              key={preset.state}
+              onClick={() => handleSimulate(preset.state)}
+              className={`${PRESET_BUTTON} ${simulatedState === preset.state ? preset.activeClass : PRESET_IDLE}`}
+            >
+              <span className={`w-1.5 h-1.5 rounded-full ${preset.dotClass}`} />
+              {preset.label}
+            </button>
+          ))}
 
           <button
             onClick={() => {
@@ -380,7 +367,7 @@ export default function CameraSafetySystem({
                 onTriggerInactivityTimeout();
               }
             }}
-            className="col-span-2 px-2 py-1.5 rounded border text-left flex items-center gap-1.5 transition bg-slate-50 border-slate-200 text-slate-600 hover:border-slate-300 hover:bg-slate-100/50"
+            className={`col-span-2 ${PRESET_BUTTON} ${PRESET_IDLE} hover:bg-slate-100/50`}
             id="simulate-inactivity-btn"
           >
             <span className="w-1.5 h-1.5 bg-amber-500 rounded-full animate-pulse" />

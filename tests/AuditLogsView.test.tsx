@@ -249,17 +249,15 @@ describe('AuditLogsView server side integrity actions', () => {
     expect(onRefresh).toHaveBeenCalledTimes(1);
   });
 
-  it('alerts the operator when the tamper simulation is rejected', async () => {
+  it('shows an error banner when the tamper simulation is rejected', async () => {
     const user = userEvent.setup();
     const logs = await defaultChain();
     const { onRefresh, onTriggerTamper } = setup(logs);
     onTriggerTamper.mockRejectedValueOnce(new Error('Need at least two logs'));
-    const alertSpy = vi.fn();
-    vi.stubGlobal('alert', alertSpy);
 
     await user.click(screen.getByRole('button', { name: /Simulate Ledger Tampering/ }));
 
-    await waitFor(() => expect(alertSpy).toHaveBeenCalledWith('Need at least two logs'));
+    expect(await screen.findByText('Need at least two logs')).toBeInTheDocument();
     expect(onRefresh).not.toHaveBeenCalled();
   });
 

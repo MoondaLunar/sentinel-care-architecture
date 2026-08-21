@@ -11,23 +11,22 @@ interface ConsultModeManagerProps {
   consultState: ConsultModeState;
   onChange: (state: ConsultModeState) => void;
   onLogAudit: (action: 'CREATE' | 'UPDATE' | 'VIEW' | 'SYNC_PULL' | 'SYNC_PUSH' | 'SECURITY_ALERT', reason: string) => void;
+  onVerifyBadgePin?: (pin: string) => Promise<boolean>;
 }
 
 export default function ConsultModeManager({
   consultState,
   onChange,
-  onLogAudit
+  onLogAudit,
+  onVerifyBadgePin
 }: ConsultModeManagerProps) {
   const [showAuthModal, setShowAuthModal] = useState(false);
   const [pinInput, setPinInput] = useState('');
   const [authError, setAuthError] = useState<string | null>(null);
+  const [isVerifying, setIsVerifying] = useState(false);
   
   // Local temporary selection fields
   const [tempFields, setTempFields] = useState(consultState.selectedFields);
-
-  // Default PIN for simulated physician badge re-auth
-  const CLINICAL_PIN = '1234';
-  // SIMULATION ONLY - NEVER USE IN PRODUCTION
 
   // Timer countdown handler
   useEffect(() => {
@@ -74,9 +73,22 @@ export default function ConsultModeManager({
     setAuthError(null);
   };
 
-  const handleAuthenticate = (e: React.FormEvent) => {
+  const handleAuthenticate = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (pinInput === CLINICAL_PIN) {
+    if (!onVerifyBadgePin) {
+      setAuthError('Badge verification is not configured.');
+      return;
+    }
+
+    setIsVerifying(true);
+    try {
+      const verified = await onVerifyBadgePin(pinInput);
+      if (!verified) {
+        setAuthError('Invalid credential.');
+        setPinInput('');
+        return;
+      }
+
       // Re-authentication success! Activate Consult Mode
       const selectedFieldNames = Object.entries(tempFields)
         .filter(([_, value]) => value)
@@ -95,9 +107,11 @@ export default function ConsultModeManager({
         'SECURITY_ALERT',
         `Activated HIPAA Consult Mode. Badge/PIN re-authenticated. Restricted viewport fields: [${selectedFieldNames}]`
       );
-    } else {
-      setAuthError('Invalid Clinical Provider PIN. Please use default PIN: 1234 for simulation.');
+    } catch (err) {
+      setAuthError('Credential verification failed.');
       setPinInput('');
+    } finally {
+      setIsVerifying(false);
     }
   };
 
@@ -283,7 +297,7 @@ export default function ConsultModeManager({
             <form onSubmit={handleAuthenticate} className="space-y-4">
               <div className="space-y-2">
                 <label className="text-[10px] uppercase font-mono tracking-wider text-slate-400">
-                  Enter 4-Digit Badge PIN (Simulated Default: <strong className="text-blue-600">1234</strong>)
+                  Enter 4-Digit Badge PIN
                 </label>
                 <input
                   type="password"
@@ -308,7 +322,7 @@ export default function ConsultModeManager({
 
               <button
                 type="submit"
-                disabled={pinInput.length !== 4}
+                disabled={pinInput.length !== 4 || isVerifying}
                 className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 active:translate-y-px transition text-white text-xs font-bold rounded-lg disabled:opacity-40"
               >
                 Confirm Biometric / PIN Verification

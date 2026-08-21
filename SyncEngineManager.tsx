@@ -205,7 +205,13 @@ export default function SyncEngineManager({
 
       if (!hasConflicts) {
         setRetryCount(0); // Reset backoff on full success
-        await triggerServerFetch(); // Refresh local catalog
+        try {
+          await triggerServerFetch(); // Refresh local catalog
+        } catch (fetchErr) {
+          // The push itself succeeded; only the catalog refresh failed, so don't
+          // mark synced events as failed or re-enter the backoff loop.
+          setSyncError('Sync completed, but refreshing the local catalog from the server failed.');
+        }
       }
 
     } catch (err: any) {

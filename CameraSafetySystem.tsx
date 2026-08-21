@@ -46,6 +46,11 @@ export default function CameraSafetySystem({
         if (videoRef.current) {
           videoRef.current.srcObject = stream;
           setIsCameraActive(true);
+        } else {
+          // No video element to attach to: release the camera and surface the failure
+          stream.getTracks().forEach(track => track.stop());
+          setCameraError('Camera stream could not be attached to the viewport. Falling back to local clinical simulator.');
+          setIsCameraActive(false);
         }
       } catch (err: any) {
         console.warn('Camera permission denied or unavailable, running with simulated fallback:', err);
@@ -249,6 +254,11 @@ export default function CameraSafetySystem({
           <div className="text-center p-4 text-slate-400 space-y-2">
             <EyeOff className="w-8 h-8 mx-auto text-slate-500" />
             <p className="text-xs">Camera Feed Inactive / Blocked</p>
+            {cameraError && (
+              <p className="text-[10px] text-amber-500 max-w-[200px]">
+                {cameraError}
+              </p>
+            )}
             <p className="text-[10px] text-slate-500 max-w-[200px]">
               Using automated high-fidelity simulator for compliance testing.
             </p>

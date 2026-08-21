@@ -4,10 +4,11 @@
  */
 
 import React, { useState } from 'react';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import SyncEngineManager from '../components/SyncEngineManager';
+import { setAccessToken } from '../security';
 import { Patient, SyncEvent } from '../types';
 import { makePatient, makeSyncEvent, makeUser } from './fixtures';
 
@@ -15,6 +16,7 @@ interface HarnessOptions {
   patients?: Patient[];
   events?: SyncEvent[];
   online?: boolean;
+  currentUser?: ReturnType<typeof makeUser> | null;
 }
 
 /**
@@ -39,7 +41,7 @@ function setup(options: HarnessOptions = {}) {
       <SyncEngineManager
         localPatients={patients}
         setLocalPatients={setPatients}
-        currentUser={makeUser()}
+        currentUser={options.currentUser === undefined ? makeUser() : options.currentUser}
         onLogAudit={onLogAudit}
         syncEvents={events}
         setSyncEvents={setEvents}
@@ -76,6 +78,10 @@ const stubFetch = (...responses: unknown[]) => {
 
 const ledger = () => within(document.getElementById('sync-history-ledger-container') as HTMLElement);
 
+afterEach(() => {
+  setAccessToken(null);
+});
+
 const serverPatient = makePatient({
   version: 7,
   diagnosis: 'Severe persistent asthma',
@@ -104,6 +110,7 @@ describe('SyncEngineManager queue push', () => {
   it('flushes the queue and refreshes the local cache on a successful push', async () => {
     const pushed = makePatient({ version: 4, diagnosis: 'Moderate asthma' });
     const fetchMock = stubFetch({ results: [{ eventId: 'evt_1', status: 'success', patient: pushed }] });
+    setAccessToken('sync-test-token');
     const { latestQueue, latestPatients, triggerServerFetch } = setup({ events: [makeSyncEvent()] });
 
     expect(await screen.findByText('Synced')).toBeInTheDocument();
@@ -112,8 +119,21 @@ describe('SyncEngineManager queue push', () => {
     expect(triggerServerFetch).toHaveBeenCalledTimes(1);
 
     const [, request] = fetchMock.mock.calls[0];
-    expect(request.headers['X-User-Role']).toBe('Provider');
+    const headers = new Headers(request.headers);
+    expect(headers.get('X-User-Role')).toBeNull();
+    expect(headers.get('X-User-Id')).toBeNull();
+    expect(headers.get('Authorization')).toBe('Bearer sync-test-token');
+    expect(request.credentials).toBe('same-origin');
     expect(JSON.parse(request.body).events).toHaveLength(1);
+  });
+
+  it('fails closed without a current user and does not contact the server', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    setup({ events: [makeSyncEvent()], currentUser: null });
+
+    expect(await screen.findByText(/Authentication is required to synchronize changes/)).toBeInTheDocument();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('appends an unknown patient returned by the server to the local cache', async () => {

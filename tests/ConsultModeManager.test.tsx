@@ -11,17 +11,25 @@ import ConsultModeManager from '../components/ConsultModeManager';
 import { ConsultModeState } from '../types';
 import { makeConsultState } from './fixtures';
 
-function setup(consultState: ConsultModeState = makeConsultState()) {
+function setup(
+  consultState: ConsultModeState = makeConsultState(),
+  onVerifyBadgePin?: (pin: string) => Promise<boolean>
+) {
   const onChange = vi.fn();
   const onLogAudit = vi.fn();
   const view = render(
-    <ConsultModeManager consultState={consultState} onChange={onChange} onLogAudit={onLogAudit} />
+    <ConsultModeManager
+      consultState={consultState}
+      onChange={onChange}
+      onLogAudit={onLogAudit}
+      onVerifyBadgePin={onVerifyBadgePin}
+    />
   );
   return { onChange, onLogAudit, view };
 }
 
 describe('ConsultModeManager', () => {
-  it('requires the clinical PIN before activating consult mode', async () => {
+  it('fails closed when badge verification is not configured', async () => {
     const user = userEvent.setup();
     const { onChange, onLogAudit } = setup();
 
@@ -29,14 +37,47 @@ describe('ConsultModeManager', () => {
     await user.type(screen.getByPlaceholderText('••••'), '9999');
     await user.click(screen.getByRole('button', { name: /Confirm Biometric/i }));
 
-    expect(screen.getByText(/Invalid Clinical Provider PIN/i)).toBeInTheDocument();
+    expect(screen.getByText(/Badge verification is not configured/i)).toBeInTheDocument();
     expect(onChange).not.toHaveBeenCalled();
     expect(onLogAudit).not.toHaveBeenCalled();
+    expect(screen.getByText(/Badge verification is not configured/i)).not.toHaveTextContent('1234');
   });
 
-  it('activates a 5 minute session and audits the exposed fields on the correct PIN', async () => {
+  it('shows a generic error when badge verification rejects the credential', async () => {
     const user = userEvent.setup();
-    const { onChange, onLogAudit } = setup();
+    const { onChange, onLogAudit } = setup(makeConsultState(), vi.fn().mockResolvedValue(false));
+
+    await user.click(screen.getByRole('button', { name: /Badge Re-Authenticate/i }));
+    await user.type(screen.getByPlaceholderText('••••'), '9999');
+    await user.click(screen.getByRole('button', { name: /Confirm Biometric/i }));
+
+    expect(await screen.findByText(/Invalid credential/i)).toBeInTheDocument();
+    expect(onChange).not.toHaveBeenCalled();
+    expect(onLogAudit).not.toHaveBeenCalled();
+    expect(screen.queryByText(/1234/)).not.toBeInTheDocument();
+  });
+
+  it('shows a generic error when badge verification fails', async () => {
+    const user = userEvent.setup();
+    const { onChange, onLogAudit } = setup(
+      makeConsultState(),
+      vi.fn().mockRejectedValue(new Error('verification service unavailable'))
+    );
+
+    await user.click(screen.getByRole('button', { name: /Badge Re-Authenticate/i }));
+    await user.type(screen.getByPlaceholderText('••••'), '9999');
+    await user.click(screen.getByRole('button', { name: /Confirm Biometric/i }));
+
+    expect(await screen.findByText(/Credential verification failed/i)).toBeInTheDocument();
+    expect(onChange).not.toHaveBeenCalled();
+    expect(onLogAudit).not.toHaveBeenCalled();
+    expect(screen.queryByText(/1234/)).not.toBeInTheDocument();
+  });
+
+  it('activates a 5 minute session after delegated badge verification', async () => {
+    const user = userEvent.setup();
+    const onVerifyBadgePin = vi.fn().mockResolvedValue(true);
+    const { onChange, onLogAudit } = setup(makeConsultState(), onVerifyBadgePin);
 
     // Hide SSN and notes from the secondary viewer before authenticating.
     await user.click(screen.getByRole('button', { name: /SSN/ }));
@@ -46,6 +87,7 @@ describe('ConsultModeManager', () => {
     await user.type(screen.getByPlaceholderText('••••'), '1234');
     await user.click(screen.getByRole('button', { name: /Confirm Biometric/i }));
 
+    expect(onVerifyBadgePin).toHaveBeenCalledWith('1234');
     expect(onChange).toHaveBeenCalledWith({
       isActive: true,
       timeLeft: 300,
@@ -63,6 +105,7 @@ describe('ConsultModeManager', () => {
     expect(action).toBe('SECURITY_ALERT');
     expect(reason).toContain('NAME, BIRTHDATE, DIAGNOSIS, MEDICATIONS');
     expect(reason).not.toContain('SSN');
+    expect(screen.queryByText(/1234/)).not.toBeInTheDocument();
   });
 
   it('disables the confirm button until four digits are entered and strips non-digits', async () => {

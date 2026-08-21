@@ -242,6 +242,35 @@ describe('GDPRManager receipt verification', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it('rejects malformed verification codes without issuing a request', async () => {
+    const user = userEvent.setup();
+    const fetchMock = stubRoutes({});
+    setup();
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    await user.type(screen.getByPlaceholderText(/Enter Verification Code/), '../invalid');
+    await user.click(screen.getByRole('button', { name: 'Verify' }));
+
+    expect(await screen.findByText('Invalid verification code format.')).toBeInTheDocument();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('URL-encodes a valid verification code in the request path', async () => {
+    const user = userEvent.setup();
+    const token = 'gdpr_verify_abc123';
+    const fetchMock = stubRoutes({
+      verify: { ok: false, body: { error: 'Unknown verification code' } }
+    });
+    setup();
+
+    await user.type(screen.getByPlaceholderText(/Enter Verification Code/), token);
+    await user.click(screen.getByRole('button', { name: 'Verify' }));
+
+    await screen.findByText('Unknown verification code');
+    const verifyCall = fetchMock.mock.calls.find(([url]) => url.includes('/verify/'));
+    expect(verifyCall?.[0]).toBe(`/api/gdpr-requests/verify/${encodeURIComponent(token)}`);
+  });
 });
 
 describe('GDPRManager compliance officer queue', () => {

@@ -52,9 +52,10 @@ function setup(options: HarnessOptions = {}) {
     );
   }
 
-  render(options.strict ? <StrictMode><Harness /></StrictMode> : <Harness />);
+  const { unmount } = render(options.strict ? <StrictMode><Harness /></StrictMode> : <Harness />);
 
   return {
+    unmount,
     onLogAudit,
     triggerServerFetch,
     latestQueue: () => queueSpy.mock.calls.at(-1)?.[0] ?? [],
@@ -270,6 +271,63 @@ describe('SyncEngineManager retry scheduling', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2), { timeout: 4000 });
     expect(await screen.findByText('Retrying in 4s')).toBeInTheDocument();
     expect(screen.getByText(/Offline buffer retry attempt #2/)).toBeInTheDocument();
+  });
+
+  it('still refreshes the local catalog when only part of the batch is rejected', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        results: [
+          { eventId: 'evt_1', status: 'success', patient: makePatient({ version: 4 }) },
+          { eventId: 'evt_2', status: 'error', error: 'Rejected' }
+        ]
+      })
+    );
+    vi.stubGlobal('fetch', fetchMock);
+    const { triggerServerFetch, latestQueue } = setup({
+      events: [makeSyncEvent(), makeSyncEvent({ id: 'evt_2' })]
+    });
+
+    expect(await screen.findByText('Retrying in 2s')).toBeInTheDocument();
+    expect(triggerServerFetch).toHaveBeenCalledTimes(1);
+    expect(latestQueue().map(event => event.id)).toEqual(['evt_2']);
+  });
+
+  it('does not re-push the pre-resolution event after a forced overwrite', async () => {
+    const user = userEvent.setup();
+    const pushedVersions: number[][] = [];
+    const fetchMock = vi.fn(async (_url: string, init: { body: string }) => {
+      const events: SyncEvent[] = JSON.parse(init.body).events;
+      pushedVersions.push(events.map(event => event.version));
+      return pushedVersions.length === 1
+        ? jsonResponse({
+            results: [{ eventId: 'evt_1', status: 'conflict', error: 'Version mismatch', serverPatient }]
+          })
+        : jsonResponse({ results: [] });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    setup({ events: [makeSyncEvent({ payload: makePatient({ version: 3 }) })] });
+
+    expect(await screen.findByText('HIPAA Concurrency Conflict Detected')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: /Force Overwrite Server/ }));
+
+    await waitFor(() => expect(pushedVersions).toHaveLength(2));
+    await new Promise(resolve => setTimeout(resolve, 300));
+    // The resolved event is pushed once at the server version; the stale v3
+    // payload must never be sent again.
+    expect(pushedVersions).toEqual([[3], [7]]);
+  });
+
+  it('cancels a pending retry when the engine unmounts', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const fetchMock = vi.fn().mockRejectedValue(new Error('ECONNREFUSED'));
+    vi.stubGlobal('fetch', fetchMock);
+    const { unmount } = setup({ events: [makeSyncEvent()] });
+
+    expect(await screen.findByText('Retrying in 2s')).toBeInTheDocument();
+    unmount();
+
+    await new Promise(resolve => setTimeout(resolve, 2500));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('keeps a single push in flight when the effects are double invoked', async () => {

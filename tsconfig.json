@@ -12,5 +12,5 @@
     "allowSyntheticDefaultImports": true,
     "types": ["node", "vitest/globals", "@testing-library/jest-dom"]
   },
-  "include": ["components", "types.ts", "tests", "vitest.config.ts"]
+  "include": ["components", "src", "types.ts", "tests", "vitest.config.ts"]
 }

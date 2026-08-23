@@ -6,6 +6,9 @@
   "description": "Sanitized reference implementation of the Sentinel Care architecture (React demo components).",
   "license": "Apache-2.0",
   "scripts": {
+    "dev": "vite --host 0.0.0.0 --port 4173",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --host 0.0.0.0 --port 4173",
     "test": "vitest run",
     "test:watch": "vitest",
     "coverage": "vitest run --coverage",
@@ -17,6 +20,7 @@
     "react-dom": "18.3.1"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "^4.1.11",
     "@testing-library/dom": "10.4.0",
     "@testing-library/jest-dom": "6.5.0",
     "@testing-library/react": "16.0.1",
@@ -27,7 +31,9 @@
     "@vitejs/plugin-react": "4.3.2",
     "@vitest/coverage-v8": "2.1.2",
     "jsdom": "25.0.1",
+    "tailwindcss": "^4.1.11",
     "typescript": "5.6.2",
+    "vite": "^5.4.10",
     "vitest": "2.1.2"
   }
 }

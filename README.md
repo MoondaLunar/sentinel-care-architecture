@@ -21,6 +21,15 @@ Sentinel Care is a privacy-first, HIPAA/GDPR-compliant healthcare platform with 
 
 Envers records every persisted patient, GDPR-request, and security-event create, update, and delete with the authenticated actor and role in `revinfo`. The revision history endpoint is `GET /api/v1/patients/{id}/revisions` and requires `SCOPE_audit.read` or `ROLE_AUDITOR`. Operational events are written via `POST /api/v1/audit-events` and are themselves Envers-audited—there is no custom hash-chain audit store. GDPR erasure requests are recorded as audited entities; retention overrides are applied via a configurable jurisdiction policy layer.
 
+## Audit trail and integrity
+Sentinel Care does not implement a custom tamper-proof audit store, and we don't claim one. Audited history is provided by Hibernate Envers: it records a full revision history of audited entities, including consent, erasure, and file access (VIEW) events.
+On top of Envers, the demo computes a SHA-256 digest chain over the recorded revision sequence. Each block's digest is computed from its own audited fields plus the previous block's digest, so the sequence can be verified end to end: any revision changed after recording, without recomputing its digest, breaks the chain. The tamper-detection view exercises exactly this check.
+What the chain proves, stated plainly:
+It detects corruption, partial writes, and edits that don't recompute the digests. Verification is a consistency check over the demonstrated sequence.
+It does not prove tamper-resistance against someone who can write to the database. Records and digests live in the same store, so a DBA with write access can rewrite a revision, recompute the chain, and pass verification. This is integrity checking, not chain of custody.
+
+Production hardening (out of scope for this reference implementation, which uses mocked auth and simulated encryption throughout): server-side HMAC keys over the digests, and a monthly anchor hash published outside the database so the chain has an external witness.
+
 ## 🌟 Key Features Showcased
 
 This demo highlights the following architectural patterns:

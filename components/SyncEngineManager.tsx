@@ -5,7 +5,56 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { SyncEvent, Patient, UserSession } from '../types';
-import { Wifi, WifiOff, CloudLightning, Layers, RefreshCw, AlertTriangle, ArrowRight, Check, Database, Trash2, Clock } from 'lucide-react';
+import { Wifi, WifiOff, Layers, RefreshCw, AlertTriangle, Check, Database, Trash2, Clock } from 'lucide-react';
+import AlertBanner from './AlertBanner';
+import ModalShell from './ModalShell';
+import StatusPill from './StatusPill';
+import { requestJson } from './apiClient';
+import { patchById, patchWhere, upsertById } from './collections';
+import { formatTimeOfDay } from './formatting';
+import { CAPTION, INFO_NOTE, PANEL, PRIMARY_BUTTON, SECONDARY_BUTTON } from './uiClasses';
+
+type SyncOutcome = 'success' | 'conflict' | 'error' | 'pending';
+
+interface SyncResult {
+  eventId: string;
+  status: SyncOutcome;
+  patient: Patient;
+  serverPatient: Patient;
+  error?: string;
+}
+
+const SYNC_OUTCOME_PILL: Record<SyncOutcome, {
+  className: string;
+  icon: React.ComponentType<{ className?: string }>;
+  iconClassName: string;
+  label: string;
+}> = {
+  success: {
+    className: 'bg-emerald-50 text-emerald-700 border-emerald-200',
+    icon: Check,
+    iconClassName: 'w-2.5 h-2.5 text-emerald-600',
+    label: 'Synced'
+  },
+  conflict: {
+    className: 'bg-amber-50 text-amber-700 border-amber-200',
+    icon: AlertTriangle,
+    iconClassName: 'w-2.5 h-2.5 text-amber-600',
+    label: 'Conflict'
+  },
+  error: {
+    className: 'bg-rose-50 text-rose-700 border-rose-200',
+    icon: AlertTriangle,
+    iconClassName: 'w-2.5 h-2.5 text-rose-600',
+    label: 'Failed'
+  },
+  pending: {
+    className: 'bg-slate-100 text-slate-700 border-slate-200 animate-pulse',
+    icon: RefreshCw,
+    iconClassName: 'w-2.5 h-2.5 text-slate-500 animate-spin',
+    label: 'Pending Sync'
+  }
+};
 
 interface SyncEngineManagerProps {
   localPatients: Patient[];
@@ -42,7 +91,7 @@ export default function SyncEngineManager({
     patientName: string;
     action: 'CREATE' | 'UPDATE';
     timestamp: string;
-    status: 'success' | 'conflict' | 'error' | 'pending';
+    status: SyncOutcome;
     error?: string;
     reason?: string;
   }>>([]);
@@ -130,36 +179,21 @@ export default function SyncEngineManager({
     setSyncError(null);
 
     // Set all pending items to active status
-    setSyncHistory(prev => prev.map(item => {
-      if (syncEvents.some(se => se.id === item.id)) {
-        return { ...item, status: 'pending' };
-      }
-      return item;
-    }));
+    setSyncHistory(prev => patchWhere(prev, item => syncEvents.some(se => se.id === item.id), { status: 'pending' }));
 
     try {
       // Push the sync queue to the server
-      const response = await fetch('/api/sync', {
+      const data = await requestJson<{ results?: SyncResult[] }>('/api/sync', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-User-Role': currentUser?.role || 'Provider',
-          'X-User-Id': currentUser?.userId || 'anonymous'
-        },
-        body: JSON.stringify({ events: syncEvents })
+        actor: currentUser,
+        body: { events: syncEvents }
       });
-
-      if (!response.ok) {
-        throw new Error(`Sync Server returned status ${response.status}`);
-      }
-
-      const data = await response.json();
       const results = data.results || [];
       
       let newSyncEvents = [...syncEvents];
       let hasConflicts = false;
 
-      const outcomes: Record<string, { status: 'success' | 'conflict' | 'error'; error?: string }> = {};
+      const outcomes: Record<string, { status: Exclude<SyncOutcome, 'pending'>; error?: string }> = {};
 
       // Handle outcomes of individual synced items
       for (const res of results) {
@@ -190,16 +224,11 @@ export default function SyncEngineManager({
       }
 
       // Update syncHistory with outcomes
-      setSyncHistory(prev => prev.map(item => {
-        if (outcomes[item.id]) {
-          return {
-            ...item,
-            status: outcomes[item.id].status,
-            error: outcomes[item.id].error
-          };
-        }
-        return item;
-      }));
+      setSyncHistory(prev => prev.map(item => (
+        outcomes[item.id]
+          ? { ...item, status: outcomes[item.id].status, error: outcomes[item.id].error }
+          : item
+      )));
 
       setSyncEvents(newSyncEvents);
 
@@ -214,25 +243,18 @@ export default function SyncEngineManager({
       setRetryCount(prev => prev + 1);
       
       // Update pending items to network error status
-      setSyncHistory(prev => prev.map(item => {
-        if (syncEvents.some(se => se.id === item.id)) {
-          return { ...item, status: 'error', error: 'Network Connection Unreachable' };
-        }
-        return item;
-      }));
+      setSyncHistory(prev => patchWhere(
+        prev,
+        item => syncEvents.some(se => se.id === item.id),
+        { status: 'error', error: 'Network Connection Unreachable' }
+      ));
     } finally {
       setIsSyncing(false);
     }
   };
 
   const updateLocalPatientInMemory = (patient: Patient) => {
-    setLocalPatients(prev => {
-      const idx = prev.findIndex(p => p.id === patient.id);
-      if (idx === -1) return [...prev, patient];
-      const copy = [...prev];
-      copy[idx] = patient;
-      return copy;
-    });
+    setLocalPatients(prev => upsertById(prev, patient));
   };
 
   // ==========================================
@@ -252,11 +274,9 @@ export default function SyncEngineManager({
     };
 
     // Update syncHistory to pending with reconciliation annotation
-    setSyncHistory(prev => prev.map(item => {
-      if (item.id === event.id) {
-        return { ...item, status: 'pending', reason: `[RECONCILED - MANUAL OVERWRITE] ${event.reason}` };
-      }
-      return item;
+    setSyncHistory(prev => patchById(prev, event.id, {
+      status: 'pending',
+      reason: `[RECONCILED - MANUAL OVERWRITE] ${event.reason}`
     }));
 
     // Update event in queue and clear dialog
@@ -278,11 +298,9 @@ export default function SyncEngineManager({
     onLogAudit('SECURITY_ALERT', `Sync conflict resolved: Provider accepted remote server state for patient ${serverPatient.name}.`);
     
     // Set status to success since it's resolved and current state matches server
-    setSyncHistory(prev => prev.map(item => {
-      if (item.id === event.id) {
-        return { ...item, status: 'success', reason: `[RECONCILED - ACCEPTED REMOTE SERVER] ${event.reason}` };
-      }
-      return item;
+    setSyncHistory(prev => patchById(prev, event.id, {
+      status: 'success',
+      reason: `[RECONCILED - ACCEPTED REMOTE SERVER] ${event.reason}`
     }));
 
     // Refresh rest of the sync
@@ -312,11 +330,9 @@ export default function SyncEngineManager({
     };
 
     // Update syncHistory with merge annotation
-    setSyncHistory(prev => prev.map(item => {
-      if (item.id === event.id) {
-        return { ...item, status: 'pending', reason: `[RECONCILED - MERGED] ${event.reason}` };
-      }
-      return item;
+    setSyncHistory(prev => patchById(prev, event.id, {
+      status: 'pending',
+      reason: `[RECONCILED - MERGED] ${event.reason}`
     }));
 
     // Save locally
@@ -347,7 +363,7 @@ export default function SyncEngineManager({
   const progressPercentage = totalHistoryCount > 0 ? Math.round((completedCount / totalHistoryCount) * 100) : 0;
 
   return (
-    <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm space-y-4" id="sync-engine-panel">
+    <div className={`${PANEL} space-y-4`} id="sync-engine-panel">
       {/* Network connection toggle */}
       <div className="flex items-center justify-between border-b border-slate-200 pb-3">
         <div className="flex items-center gap-2">
@@ -438,7 +454,7 @@ export default function SyncEngineManager({
 
       {/* Backoff Retry Display */}
       {backoffTimer !== null && (
-        <div className="bg-amber-50 border border-amber-200 p-3.5 rounded-lg space-y-2 animate-fade-in">
+        <AlertBanner variant="warning" icon={null} className="p-3.5 animate-fade-in flex-col">
           <div className="flex justify-between items-center text-xs text-amber-800 font-mono">
             <span className="flex items-center gap-1">
               <RefreshCw className="w-3.5 h-3.5 animate-spin" /> Exponential Backoff Active
@@ -454,20 +470,20 @@ export default function SyncEngineManager({
           <p className="text-[10px] text-amber-700">
             Offline buffer retry attempt #{retryCount}. Delay matches clinical compliance backoff specifications.
           </p>
-        </div>
+        </AlertBanner>
       )}
 
       {syncError && (
-        <p className="text-[10px] text-red-700 bg-red-50 border border-red-250 p-2.5 rounded">
+        <AlertBanner variant="error" icon={null} className="p-2.5 text-[10px]">
           ⚠️ {syncError}
-        </p>
+        </AlertBanner>
       )}
 
       {/* Event queue detailed ledger breakdown */}
       {syncHistory.length > 0 && (
         <div className="space-y-2" id="sync-history-ledger-container">
           <div className="flex justify-between items-center">
-            <span className="text-[10px] font-mono uppercase text-slate-400 flex items-center gap-1 font-semibold">
+            <span className={`${CAPTION} flex items-center gap-1 font-semibold`}>
               <Clock className="w-3.5 h-3.5 text-slate-400" />
               Interactive Operations Ledger
             </span>
@@ -497,7 +513,7 @@ export default function SyncEngineManager({
                     </span>
                     <strong className="text-slate-800 truncate block max-w-[150px] sm:max-w-xs">{evt.patientName}</strong>
                     <span className="text-[9px] font-mono text-slate-400 ml-auto sm:ml-0">
-                      {new Date(evt.timestamp).toLocaleTimeString()}
+                      {formatTimeOfDay(evt.timestamp)}
                     </span>
                   </div>
                   {evt.reason && (
@@ -513,30 +529,12 @@ export default function SyncEngineManager({
                 </div>
 
                 <div className="shrink-0 flex items-center sm:justify-end">
-                  {evt.status === 'success' && (
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[9px] font-bold border bg-emerald-50 text-emerald-700 border-emerald-200 select-none">
-                      <Check className="w-2.5 h-2.5 text-emerald-600" />
-                      Synced
-                    </span>
-                  )}
-                  {evt.status === 'conflict' && (
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[9px] font-bold border bg-amber-50 text-amber-700 border-amber-200 select-none">
-                      <AlertTriangle className="w-2.5 h-2.5 text-amber-600" />
-                      Conflict
-                    </span>
-                  )}
-                  {evt.status === 'error' && (
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[9px] font-bold border bg-rose-50 text-rose-700 border-rose-200 select-none">
-                      <AlertTriangle className="w-2.5 h-2.5 text-rose-600" />
-                      Failed
-                    </span>
-                  )}
-                  {evt.status === 'pending' && (
-                    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[9px] font-bold border bg-slate-100 text-slate-700 border-slate-200 animate-pulse select-none">
-                      <RefreshCw className="w-2.5 h-2.5 text-slate-500 animate-spin" />
-                      Pending Sync
-                    </span>
-                  )}
+                  <StatusPill
+                    className={SYNC_OUTCOME_PILL[evt.status].className}
+                    icon={SYNC_OUTCOME_PILL[evt.status].icon}
+                    iconClassName={SYNC_OUTCOME_PILL[evt.status].iconClassName}
+                    label={SYNC_OUTCOME_PILL[evt.status].label}
+                  />
                 </div>
               </div>
             ))}
@@ -545,7 +543,7 @@ export default function SyncEngineManager({
       )}
 
       {/* OFFLINE CAPABILITY DETAILS */}
-      <div className="text-[11px] text-slate-600 leading-relaxed bg-slate-50 p-2.5 rounded border border-slate-200/60 flex gap-2">
+      <div className={`${INFO_NOTE} flex gap-2`}>
         <Database className="w-5 h-5 text-slate-400 shrink-0" />
         <div>
           <strong>Offline-First State Sync:</strong> While offline, mutations write instantly to local buffer. Upon re-establishing server connection, queue executes automatically with optimistic verification to resolve clinical concurrency hazards.
@@ -554,73 +552,65 @@ export default function SyncEngineManager({
 
       {/* CONFLICT RESOLUTION MODAL */}
       {conflictEvent && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-4 animate-fade-in">
-          <div className="bg-white border border-slate-200 w-full max-w-2xl rounded-xl p-6 shadow-2xl space-y-5">
-            <div className="flex justify-between items-start">
-              <div className="space-y-1">
-                <h4 className="font-display font-semibold text-sm text-slate-850 flex items-center gap-1.5">
-                  <AlertTriangle className="w-5 h-5 text-amber-500 animate-bounce" />
-                  HIPAA Concurrency Conflict Detected
-                </h4>
-                <p className="text-xs text-slate-500">
-                  Another clinician edited this patient file. Select resolution protocol to avoid data overwrite.
-                </p>
+        <ModalShell
+          title="HIPAA Concurrency Conflict Detected"
+          subtitle="Another clinician edited this patient file. Select resolution protocol to avoid data overwrite."
+          icon={AlertTriangle}
+          iconClassName="w-5 h-5 text-amber-500 animate-bounce"
+          maxWidthClass="max-w-2xl"
+        >
+          <div className="grid grid-cols-2 gap-4 text-xs">
+            {/* Local Offline Version */}
+            <div className="bg-slate-50 p-4 border border-blue-250 rounded-lg space-y-3">
+              <span className="font-mono text-[10px] uppercase text-blue-700 tracking-wider font-bold">
+                Your Local Offline Edits
+              </span>
+              <div className="space-y-2">
+                <p><span className="text-slate-400 block">Name:</span> <strong className="text-slate-800">{conflictEvent.event.payload.name || conflictEvent.serverPatient.name}</strong></p>
+                <p><span className="text-slate-400 block">Diagnosis:</span> <strong className="text-slate-800">{conflictEvent.event.payload.diagnosis || 'Unchanged'}</strong></p>
+                <p><span className="text-slate-400 block">Medications:</span> <strong className="text-slate-800">{conflictEvent.event.payload.medications || 'Unchanged'}</strong></p>
+                <p><span className="text-slate-400 block">Notes:</span> <strong className="text-slate-800">{conflictEvent.event.payload.notes || 'Unchanged'}</strong></p>
+                <p className="text-[10px] font-mono text-slate-400">BASE VERSION: v{conflictEvent.event.version}</p>
               </div>
             </div>
 
-            <div className="grid grid-cols-2 gap-4 text-xs">
-              {/* Local Offline Version */}
-              <div className="bg-slate-50 p-4 border border-blue-250 rounded-lg space-y-3">
-                <span className="font-mono text-[10px] uppercase text-blue-700 tracking-wider font-bold">
-                  Your Local Offline Edits
-                </span>
-                <div className="space-y-2">
-                  <p><span className="text-slate-400 block">Name:</span> <strong className="text-slate-800">{conflictEvent.event.payload.name || conflictEvent.serverPatient.name}</strong></p>
-                  <p><span className="text-slate-400 block">Diagnosis:</span> <strong className="text-slate-800">{conflictEvent.event.payload.diagnosis || 'Unchanged'}</strong></p>
-                  <p><span className="text-slate-400 block">Medications:</span> <strong className="text-slate-800">{conflictEvent.event.payload.medications || 'Unchanged'}</strong></p>
-                  <p><span className="text-slate-400 block">Notes:</span> <strong className="text-slate-800">{conflictEvent.event.payload.notes || 'Unchanged'}</strong></p>
-                  <p className="text-[10px] font-mono text-slate-400">BASE VERSION: v{conflictEvent.event.version}</p>
-                </div>
+            {/* Server Version */}
+            <div className="bg-slate-50 p-4 border border-slate-200 rounded-lg space-y-3">
+              <span className="font-mono text-[10px] uppercase text-amber-700 tracking-wider font-bold">
+                Server Active Record
+              </span>
+              <div className="space-y-2">
+                <p><span className="text-slate-400 block">Name:</span> <strong className="text-slate-800">{conflictEvent.serverPatient.name}</strong></p>
+                <p><span className="text-slate-400 block">Diagnosis:</span> <strong className="text-slate-800">{conflictEvent.serverPatient.diagnosis}</strong></p>
+                <p><span className="text-slate-400 block">Medications:</span> <strong className="text-slate-800">{conflictEvent.serverPatient.medications}</strong></p>
+                <p><span className="text-slate-400 block">Notes:</span> <strong className="text-slate-800">{conflictEvent.serverPatient.notes}</strong></p>
+                <p className="text-[10px] font-mono text-slate-400">SERVER VERSION: v{conflictEvent.serverPatient.version} (Updated by {conflictEvent.serverPatient.updatedBy})</p>
               </div>
-
-              {/* Server Version */}
-              <div className="bg-slate-50 p-4 border border-slate-200 rounded-lg space-y-3">
-                <span className="font-mono text-[10px] uppercase text-amber-700 tracking-wider font-bold">
-                  Server Active Record
-                </span>
-                <div className="space-y-2">
-                  <p><span className="text-slate-400 block">Name:</span> <strong className="text-slate-800">{conflictEvent.serverPatient.name}</strong></p>
-                  <p><span className="text-slate-400 block">Diagnosis:</span> <strong className="text-slate-800">{conflictEvent.serverPatient.diagnosis}</strong></p>
-                  <p><span className="text-slate-400 block">Medications:</span> <strong className="text-slate-800">{conflictEvent.serverPatient.medications}</strong></p>
-                  <p><span className="text-slate-400 block">Notes:</span> <strong className="text-slate-800">{conflictEvent.serverPatient.notes}</strong></p>
-                  <p className="text-[10px] font-mono text-slate-400">SERVER VERSION: v{conflictEvent.serverPatient.version} (Updated by {conflictEvent.serverPatient.updatedBy})</p>
-                </div>
-              </div>
-            </div>
-
-            <div className="flex flex-col sm:flex-row gap-3 pt-2">
-              <button
-                onClick={handleResolveMerge}
-                className="flex-1 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-lg flex items-center justify-center gap-1.5 transition"
-              >
-                <Check className="w-4 h-4" />
-                Merge Changes Field-by-Field
-              </button>
-              <button
-                onClick={handleResolveOverwriteServer}
-                className="flex-1 py-2.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 font-semibold text-xs rounded-lg flex items-center justify-center gap-1.5 transition"
-              >
-                Force Overwrite Server
-              </button>
-              <button
-                onClick={handleResolveAcceptServer}
-                className="flex-1 py-2.5 bg-red-50 text-red-700 border border-red-200 hover:bg-red-100 font-semibold text-xs rounded-lg flex items-center justify-center gap-1.5 transition"
-              >
-                Accept Server (Discard Mine)
-              </button>
             </div>
           </div>
-        </div>
+
+          <div className="flex flex-col sm:flex-row gap-3 pt-2">
+            <button
+              onClick={handleResolveMerge}
+              className={`flex-1 py-2.5 ${PRIMARY_BUTTON} text-xs flex items-center justify-center gap-1.5`}
+            >
+              <Check className="w-4 h-4" />
+              Merge Changes Field-by-Field
+            </button>
+            <button
+              onClick={handleResolveOverwriteServer}
+              className={`flex-1 py-2.5 ${SECONDARY_BUTTON} text-xs flex items-center justify-center gap-1.5`}
+            >
+              Force Overwrite Server
+            </button>
+            <button
+              onClick={handleResolveAcceptServer}
+              className="flex-1 py-2.5 bg-red-50 text-red-700 border border-red-200 hover:bg-red-100 font-semibold text-xs rounded-lg flex items-center justify-center gap-1.5 transition"
+            >
+              Accept Server (Discard Mine)
+            </button>
+          </div>
+        </ModalShell>
       )}
     </div>
   );

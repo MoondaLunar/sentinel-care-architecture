@@ -6,6 +6,10 @@
 import React, { useState, useEffect } from 'react';
 import { ConsultModeState } from '../types';
 import { ShieldCheck, Eye, EyeOff, KeyRound, AlertTriangle, RefreshCw, X, ShieldAlert } from 'lucide-react';
+import ModalShell from './ModalShell';
+import { CONSULT_SESSION_SECONDS, consultFieldLabel, inactiveConsultState } from './consultMode';
+import { formatCountdown } from './formatting';
+import { CAPTION, PANEL } from './uiClasses';
 
 interface ConsultModeManagerProps {
   consultState: ConsultModeState;
@@ -36,18 +40,7 @@ export default function ConsultModeManager({
       interval = setInterval(() => {
         if (consultState.timeLeft <= 1) {
           // Force expire Consult Mode
-          onChange({
-            isActive: false,
-            timeLeft: 0,
-            selectedFields: {
-              name: true,
-              birthdate: true,
-              ssn: true,
-              diagnosis: true,
-              medications: true,
-              notes: true
-            }
-          });
+          onChange(inactiveConsultState());
           onLogAudit('SECURITY_ALERT', 'Consult Mode session expired automatically after 5-minute timeout.');
         } else {
           onChange({
@@ -85,7 +78,7 @@ export default function ConsultModeManager({
 
       onChange({
         isActive: true,
-        timeLeft: 300, // 5 minutes
+        timeLeft: CONSULT_SESSION_SECONDS,
         selectedFields: tempFields
       });
       setShowAuthModal(false);
@@ -105,37 +98,20 @@ export default function ConsultModeManager({
     // Renew timer easily
     onChange({
       ...consultState,
-      timeLeft: 300
+      timeLeft: CONSULT_SESSION_SECONDS
     });
     onLogAudit('SECURITY_ALERT', 'HIPAA Consult Mode session prolonged by provider re-authentication.');
   };
 
   const handleExitConsult = () => {
-    onChange({
-      isActive: false,
-      timeLeft: 0,
-      selectedFields: {
-        name: true,
-        birthdate: true,
-        ssn: true,
-        diagnosis: true,
-        medications: true,
-        notes: true
-      }
-    });
+    onChange(inactiveConsultState());
     onLogAudit('SECURITY_ALERT', 'Provider voluntarily exited Consult Mode. Restored default workspace viewport permissions.');
-  };
-
-  const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60);
-    const secs = seconds % 60;
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
   const isWarningState = consultState.isActive && consultState.timeLeft <= 120; // 2 minutes or less
 
   return (
-    <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm space-y-4" id="consult-mode-panel">
+    <div className={`${PANEL} space-y-4`} id="consult-mode-panel">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <ShieldCheck className="w-5 h-5 text-blue-600" />
@@ -163,7 +139,7 @@ export default function ConsultModeManager({
 
           {/* Selector Fields Grid */}
           <div className="bg-slate-50 p-3 rounded-lg border border-slate-200/60 space-y-2.5">
-            <span className="text-[10px] uppercase font-mono tracking-wider text-slate-400 block">
+            <span className={`${CAPTION} block`}>
               Visible Clinical Fields (Select to expose)
             </span>
             <div className="grid grid-cols-2 gap-3 text-xs">
@@ -180,7 +156,7 @@ export default function ConsultModeManager({
                         : 'bg-white border-slate-200 text-slate-500 hover:border-slate-300'
                     }`}
                   >
-                    <span className="capitalize">{key === 'ssn' ? 'SSN' : key}</span>
+                    <span className="capitalize">{consultFieldLabel(key)}</span>
                     {isSelected ? <Eye className="w-3.5 h-3.5 text-blue-600" /> : <EyeOff className="w-3.5 h-3.5 text-slate-400" />}
                   </button>
                 );
@@ -209,7 +185,7 @@ export default function ConsultModeManager({
               </div>
             )}
             <span className="text-3xl font-display font-bold block tracking-wider" id="consult-countdown">
-              {formatTime(consultState.timeLeft)}
+              {formatCountdown(consultState.timeLeft)}
             </span>
             <p className="text-[10px] text-slate-500">
               {isWarningState 
@@ -231,7 +207,7 @@ export default function ConsultModeManager({
                       : 'bg-white border-slate-200/60 text-slate-400 line-through'
                   }`}
                 >
-                  {key === 'ssn' ? 'SSN' : key}
+                  {consultFieldLabel(key)}
                 </span>
               ))}
             </div>
@@ -260,62 +236,47 @@ export default function ConsultModeManager({
 
       {/* RE-AUTHENTICATION CODE-LOCK PIN DIALOG */}
       {showAuthModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-sm p-4 animate-fade-in">
-          <div className="bg-white border border-slate-200 w-full max-w-sm rounded-xl p-6 shadow-2xl space-y-4">
-            <div className="flex justify-between items-start">
-              <div className="space-y-1">
-                <h4 className="font-display font-semibold text-sm text-slate-850 flex items-center gap-1.5">
-                  <ShieldAlert className="w-4 h-4 text-blue-600" />
-                  Physician Badge Re-Auth
-                </h4>
-                <p className="text-[11px] text-slate-500">
-                  Verify credential status before shifting clinical view permissions.
-                </p>
-              </div>
-              <button
-                onClick={() => setShowAuthModal(false)}
-                className="text-slate-400 hover:text-slate-600 transition p-1"
-              >
-                <X className="w-4 h-4" />
-              </button>
+        <ModalShell
+          title="Physician Badge Re-Auth"
+          subtitle="Verify credential status before shifting clinical view permissions."
+          icon={ShieldAlert}
+          onClose={() => setShowAuthModal(false)}
+        >
+          <form onSubmit={handleAuthenticate} className="space-y-4">
+            <div className="space-y-2">
+              <label className={CAPTION}>
+                Enter 4-Digit Badge PIN (Simulated Default: <strong className="text-blue-600">1234</strong>)
+              </label>
+              <input
+                type="password"
+                maxLength={4}
+                value={pinInput}
+                onChange={(e) => {
+                  const val = e.target.value.replace(/\D/g, '');
+                  setPinInput(val);
+                  setAuthError(null);
+                }}
+                placeholder="••••"
+                autoFocus
+                className="w-full text-center text-2xl font-mono tracking-[1em] py-3 bg-slate-50 border border-slate-200 rounded-lg text-slate-800 focus:outline-none focus:border-blue-600"
+              />
             </div>
 
-            <form onSubmit={handleAuthenticate} className="space-y-4">
-              <div className="space-y-2">
-                <label className="text-[10px] uppercase font-mono tracking-wider text-slate-400">
-                  Enter 4-Digit Badge PIN (Simulated Default: <strong className="text-blue-600">1234</strong>)
-                </label>
-                <input
-                  type="password"
-                  maxLength={4}
-                  value={pinInput}
-                  onChange={(e) => {
-                    const val = e.target.value.replace(/\D/g, '');
-                    setPinInput(val);
-                    setAuthError(null);
-                  }}
-                  placeholder="••••"
-                  autoFocus
-                  className="w-full text-center text-2xl font-mono tracking-[1em] py-3 bg-slate-50 border border-slate-200 rounded-lg text-slate-800 focus:outline-none focus:border-blue-600"
-                />
-              </div>
+            {authError && (
+              <p className="text-[10px] text-red-700 bg-red-50 p-2 border border-red-100 rounded">
+                ⚠️ {authError}
+              </p>
+            )}
 
-              {authError && (
-                <p className="text-[10px] text-red-700 bg-red-50 p-2 border border-red-100 rounded">
-                  ⚠️ {authError}
-                </p>
-              )}
-
-              <button
-                type="submit"
-                disabled={pinInput.length !== 4}
-                className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 active:translate-y-px transition text-white text-xs font-bold rounded-lg disabled:opacity-40"
-              >
-                Confirm Biometric / PIN Verification
-              </button>
-            </form>
-          </div>
-        </div>
+            <button
+              type="submit"
+              disabled={pinInput.length !== 4}
+              className="w-full py-2.5 bg-blue-600 hover:bg-blue-700 active:translate-y-px transition text-white text-xs font-bold rounded-lg disabled:opacity-40"
+            >
+              Confirm Biometric / PIN Verification
+            </button>
+          </form>
+        </ModalShell>
       )}
     </div>
   );

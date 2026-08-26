@@ -64,6 +64,16 @@ export default function GDPRManager({
   const [actioningId, setActioningId] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
 
+  // Safely extract a server-provided error message, falling back when the body is not JSON
+  const readErrorMessage = async (res: Response, fallback: string): Promise<string> => {
+    try {
+      const errData = await res.json();
+      return errData.error || fallback;
+    } catch {
+      return fallback;
+    }
+  };
+
   // Load requests (for clinician view or sync)
   const fetchRequests = async () => {
     setIsLoading(true);
@@ -75,7 +85,7 @@ export default function GDPRManager({
         // Display newest requests first
         setRequests(data.reverse());
       } else {
-        setError('Failed to load GDPR requests from server.');
+        setError(await readErrorMessage(res, 'Failed to load GDPR requests from server.'));
       }
     } catch (err) {
       setError('Failed to connect to backend for GDPR data.');
@@ -127,8 +137,7 @@ export default function GDPRManager({
         setErasureReason('');
         onLogAudit('SECURITY_ALERT', `Submitted GDPR Article 17 Erasure request for patient ${targetPatient.name} (ID: ${targetPatient.id})`);
       } else {
-        const errData = await res.json();
-        setError(errData.error || 'Failed to submit GDPR deletion request.');
+        setError(await readErrorMessage(res, 'Failed to submit GDPR deletion request.'));
       }
     } catch (err) {
       setError('Connection to compliance server failed.');
@@ -154,8 +163,7 @@ export default function GDPRManager({
         setVerifiedRequest(data.request);
         setVerifiedAuditLog(data.auditLog);
       } else {
-        const errData = await res.json();
-        setVerificationError(errData.error || 'No matching GDPR deletion record was found for this code.');
+        setVerificationError(await readErrorMessage(res, 'No matching GDPR deletion record was found for this code.'));
       }
     } catch (err) {
       setVerificationError('Error connecting to the compliance server.');
@@ -193,24 +201,31 @@ export default function GDPRManager({
 
       if (res.ok) {
         setActionComment('');
-        await fetchRequests();
-        await triggerRefreshPatients();
         onLogAudit('SECURITY_ALERT', `GDPR deletion request status updated to ${status} for Request ID ${requestId}`);
+        try {
+          await fetchRequests();
+          await triggerRefreshPatients();
+        } catch (refreshErr) {
+          setActionError('Request status was updated, but refreshing local data failed. Please reload manually.');
+        }
       } else {
-        const errData = await res.json();
-        setActionError(errData.error || 'Failed to update request status.');
+        setActionError(await readErrorMessage(res, 'Failed to update request status.'));
       }
     } catch (err) {
-      setActionError('Connection failure.');
+      setActionError('Connection failure while updating request status.');
     } finally {
       setActioningId(null);
     }
   };
 
-  const copyToClipboard = (text: string) => {
-    navigator.clipboard.writeText(text);
-    setCopiedToken(true);
-    setTimeout(() => setCopiedToken(false), 2000);
+  const copyToClipboard = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedToken(true);
+      setTimeout(() => setCopiedToken(false), 2000);
+    } catch (err) {
+      setError('Could not copy the verification code to the clipboard. Please copy it manually.');
+    }
   };
 
   return (
@@ -557,6 +572,13 @@ export default function GDPRManager({
               </p>
             </div>
           </div>
+
+          {error && (
+            <div className="text-xs text-red-700 bg-red-50 border border-red-200 p-3 rounded-lg flex items-center gap-2">
+              <AlertTriangle className="w-4 h-4 shrink-0 text-red-500" />
+              <span>{error}</span>
+            </div>
+          )}
 
           {isLoading ? (
             <div className="text-center py-12 flex justify-center items-center gap-2 text-slate-450 font-medium">

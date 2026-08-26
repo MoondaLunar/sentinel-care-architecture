@@ -55,6 +55,7 @@ export default function AuditLogsView({
   
   const [selectedLogJson, setSelectedLogJson] = useState<AuditLog | null>(null);
   const [tamperAlert, setTamperAlert] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   // Search and Filtering states
   const [searchText, setSearchText] = useState('');
@@ -219,20 +220,25 @@ export default function AuditLogsView({
   const handleVerifyIntegrity = async () => {
     setIsVerifying(true);
     setVerificationResult(null);
+    setActionError(null);
     try {
       const response = await fetch('/api/audit-logs/verify', { method: 'POST' });
       if (response.ok) {
         const result = await response.json();
         setVerificationResult(result);
+      } else {
+        setActionError(`Integrity verification failed: server returned status ${response.status}.`);
       }
     } catch (err) {
       console.error('Integrity verification failed:', err);
+      setActionError('Integrity verification failed: could not reach the compliance server.');
     } finally {
       setIsVerifying(false);
     }
   };
 
   const handleTamperSimulation = async () => {
+    setActionError(null);
     try {
       const res = await onTriggerTamper();
       if (res && res.tamperedLogId) {
@@ -242,16 +248,30 @@ export default function AuditLogsView({
         setVerificationResult(null);
       }
     } catch (err: any) {
-      alert(err.message || 'Cannot tamper: write at least 2 logs first.');
+      setActionError(err.message || 'Cannot tamper: write at least 2 logs first.');
     }
   };
 
   const handleReset = async () => {
     if (confirm('Re-initialize standard compliant audit chain and databases to default pristine state?')) {
-      await onResetDatabase();
-      setVerificationResult(null);
-      setTamperAlert(null);
-      await onRefresh();
+      setActionError(null);
+      try {
+        await onResetDatabase();
+        setVerificationResult(null);
+        setTamperAlert(null);
+        await onRefresh();
+      } catch (err: any) {
+        setActionError(err.message || 'Failed to re-initialize the audit databases.');
+      }
+    }
+  };
+
+  const formatSnapshot = (snapshot: string | null | undefined, emptyLabel: string) => {
+    if (!snapshot) return emptyLabel;
+    try {
+      return JSON.stringify(JSON.parse(snapshot), null, 2);
+    } catch {
+      return snapshot;
     }
   };
 
@@ -319,6 +339,14 @@ export default function AuditLogsView({
           </button>
         </div>
       </div>
+
+      {/* Action error banner */}
+      {actionError && (
+        <div className="bg-red-50 border border-red-200 p-4 rounded-xl flex items-start gap-3 animate-fade-in text-xs text-red-800">
+          <XCircle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+          <p>{actionError}</p>
+        </div>
+      )}
 
       {/* Simulator alerts panel */}
       {tamperAlert && (
@@ -423,7 +451,11 @@ export default function AuditLogsView({
               Chained Ledger Blocks ({filteredLogs.length} shown)
             </span>
             <button
-              onClick={onRefresh}
+              onClick={() => {
+                onRefresh().catch(() => {
+                  setActionError('Failed to refresh audit logs from the server.');
+                });
+              }}
               className="text-xs text-blue-600 hover:underline flex items-center gap-1 transition font-medium"
             >
               <RefreshCw className="w-3 h-3" /> Refresh Logs
@@ -668,18 +700,14 @@ export default function AuditLogsView({
                 <div className="space-y-1">
                   <span className="text-slate-400 uppercase tracking-wide block text-[10px]">BEFORE STATE SNAPSHOT</span>
                   <pre className="bg-slate-50 p-3 rounded-lg border border-slate-200 overflow-x-auto text-[10px] text-slate-700 leading-relaxed max-h-56">
-                    {selectedLogJson.beforeState 
-                      ? JSON.stringify(JSON.parse(selectedLogJson.beforeState), null, 2) 
-                      : 'null (Genesis/Create Action)'}
+                    {formatSnapshot(selectedLogJson.beforeState, 'null (Genesis/Create Action)')}
                   </pre>
                 </div>
 
                 <div className="space-y-1">
                   <span className="text-slate-400 uppercase tracking-wide block text-[10px]">AFTER STATE SNAPSHOT</span>
                   <pre className="bg-slate-50 p-3 rounded-lg border border-slate-200 overflow-x-auto text-[10px] text-blue-700/90 leading-relaxed max-h-56">
-                    {selectedLogJson.afterState 
-                      ? JSON.stringify(JSON.parse(selectedLogJson.afterState), null, 2) 
-                      : 'null (View/Read Action)'}
+                    {formatSnapshot(selectedLogJson.afterState, 'null (View/Read Action)')}
                   </pre>
                 </div>
               </div>

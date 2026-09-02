@@ -5,6 +5,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { GDPRDeletionRequest, UserSession, Patient, AuditLog } from '../types';
+import { authorizedFetch, isValidVerificationToken } from '../security';
 import { 
   Shield, 
   Trash2, 
@@ -69,7 +70,7 @@ export default function GDPRManager({
     setIsLoading(true);
     setError(null);
     try {
-      const res = await fetch('/api/gdpr-requests');
+      const res = await authorizedFetch('/api/gdpr-requests');
       if (res.ok) {
         const data = await res.json();
         // Display newest requests first
@@ -103,12 +104,10 @@ export default function GDPRManager({
     }
 
     try {
-      const res = await fetch('/api/gdpr-requests', {
+      const res = await authorizedFetch('/api/gdpr-requests', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'X-User-Role': currentUser.role,
-          'X-User-Id': currentUser.userId
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({
           patientId: targetPatient.id,
@@ -140,7 +139,12 @@ export default function GDPRManager({
   // Verify request
   const handleVerifyRequestToken = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
-    if (!verificationInput.trim()) return;
+    const verificationCode = verificationInput.trim();
+    if (!verificationCode) return;
+    if (!isValidVerificationToken(verificationCode)) {
+      setVerificationError('Invalid verification code format.');
+      return;
+    }
 
     setVerifying(true);
     setVerificationError(null);
@@ -148,7 +152,7 @@ export default function GDPRManager({
     setVerifiedAuditLog(null);
 
     try {
-      const res = await fetch(`/api/gdpr-requests/verify/${verificationInput.trim()}`);
+      const res = await authorizedFetch(`/api/gdpr-requests/verify/${encodeURIComponent(verificationCode)}`);
       if (res.ok) {
         const data = await res.json();
         setVerifiedRequest(data.request);
@@ -178,12 +182,10 @@ export default function GDPRManager({
     }
 
     try {
-      const res = await fetch(`/api/gdpr-requests/${requestId}/status`, {
+      const res = await authorizedFetch(`/api/gdpr-requests/${requestId}/status`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'X-User-Role': currentUser.role,
-          'X-User-Id': currentUser.userId
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({
           status,

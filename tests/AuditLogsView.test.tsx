@@ -11,7 +11,7 @@ import AuditLogsView from '../components/AuditLogsView';
 import { AuditLog } from '../types';
 import { GENESIS_HASH, buildLogChain, computeLogHash } from './fixtures';
 
-function setup(logs: AuditLog[]) {
+function setup(logs: AuditLog[], enableSimulatorTools = false) {
   const onRefresh = vi.fn().mockResolvedValue(undefined);
   const onTriggerTamper = vi.fn().mockResolvedValue(undefined);
   const onResetDatabase = vi.fn().mockResolvedValue(undefined);
@@ -22,6 +22,7 @@ function setup(logs: AuditLog[]) {
       onRefresh={onRefresh}
       onTriggerTamper={onTriggerTamper}
       onResetDatabase={onResetDatabase}
+      enableSimulatorTools={enableSimulatorTools}
     />
   );
 
@@ -105,7 +106,7 @@ describe('AuditLogsView hash chain verification', () => {
     const logs = await defaultChain();
     const buffered: AuditLog = {
       ...logs[0],
-      id: 'mock_log_offline',
+      id: 'log_offline',
       hash: 'PENDING_OFFLINE_SYNC_HASH'
     };
     setup([buffered, ...logs]);
@@ -114,6 +115,17 @@ describe('AuditLogsView hash chain verification', () => {
       expect(screen.getByText('Offline Pending')).toBeInTheDocument();
     });
     expect(screen.queryByText('Tamper Detected')).not.toBeInTheDocument();
+  });
+
+  it('does not trust a mock log id when its hash is not pending', async () => {
+    const logs = await defaultChain();
+    const mockLog: AuditLog = { ...logs[0], id: 'mock_log_offline' };
+    setup([mockLog, ...logs]);
+
+    await waitFor(() => {
+      expect(screen.getByText('Tamper Detected')).toBeInTheDocument();
+    });
+    expect(screen.queryByText('Offline Pending')).not.toBeInTheDocument();
   });
 });
 
@@ -240,7 +252,7 @@ describe('AuditLogsView server side integrity actions', () => {
   it('announces a successful tamper simulation and reloads the ledger', async () => {
     const user = userEvent.setup();
     const logs = await defaultChain();
-    const { onRefresh, onTriggerTamper } = setup(logs);
+    const { onRefresh, onTriggerTamper } = setup(logs, true);
     onTriggerTamper.mockResolvedValueOnce({ tamperedLogId: 'log_2', tamperedIndex: 1 });
 
     await user.click(screen.getByRole('button', { name: /Simulate Ledger Tampering/ }));
@@ -252,7 +264,7 @@ describe('AuditLogsView server side integrity actions', () => {
   it('alerts the operator when the tamper simulation is rejected', async () => {
     const user = userEvent.setup();
     const logs = await defaultChain();
-    const { onRefresh, onTriggerTamper } = setup(logs);
+    const { onRefresh, onTriggerTamper } = setup(logs, true);
     onTriggerTamper.mockRejectedValueOnce(new Error('Need at least two logs'));
     const alertSpy = vi.fn();
     vi.stubGlobal('alert', alertSpy);
@@ -266,7 +278,7 @@ describe('AuditLogsView server side integrity actions', () => {
   it('only re-initialises the ledger once the operator confirms', async () => {
     const user = userEvent.setup();
     const logs = await defaultChain();
-    const { onRefresh, onResetDatabase } = setup(logs);
+    const { onRefresh, onResetDatabase } = setup(logs, true);
     const confirmSpy = vi.fn().mockReturnValueOnce(false).mockReturnValueOnce(true);
     vi.stubGlobal('confirm', confirmSpy);
 
@@ -276,6 +288,15 @@ describe('AuditLogsView server side integrity actions', () => {
     await user.click(screen.getByRole('button', { name: /Re-Initialize System/ }));
     await waitFor(() => expect(onResetDatabase).toHaveBeenCalledTimes(1));
     expect(onRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('hides simulator tools by default', async () => {
+    const logs = await defaultChain();
+    setup(logs);
+
+    expect(screen.queryByText('Compliance Audit Simulator')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Simulate Ledger Tampering/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Re-Initialize System/ })).not.toBeInTheDocument();
   });
 });
 

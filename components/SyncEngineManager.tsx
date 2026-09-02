@@ -5,6 +5,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import { SyncEvent, Patient, UserSession } from '../types';
+import { authorizedFetch } from '../security';
 import { Wifi, WifiOff, CloudLightning, Layers, RefreshCw, AlertTriangle, ArrowRight, Check, Database, Trash2, Clock } from 'lucide-react';
 
 interface SyncEngineManagerProps {
@@ -79,9 +80,12 @@ export default function SyncEngineManager({
 
   // Exponential Backoff Retry Simulator Loop
   useEffect(() => {
-    if (!isOnline) {
+    if (!isOnline || !currentUser) {
       // Clear timers if we go offline
       clearBackoff();
+      if (!currentUser && syncEvents.length > 0) {
+        setSyncError('Authentication is required to synchronize changes.');
+      }
       return;
     }
 
@@ -94,7 +98,7 @@ export default function SyncEngineManager({
         startBackoff();
       }
     }
-  }, [syncEvents, isOnline, retryCount]);
+  }, [syncEvents, isOnline, retryCount, currentUser]);
 
   const startBackoff = () => {
     clearBackoff();
@@ -125,6 +129,11 @@ export default function SyncEngineManager({
 
   const attemptSync = async () => {
     if (syncEvents.length === 0 || !isOnline) return;
+    if (!currentUser) {
+      clearBackoff();
+      setSyncError('Authentication is required to synchronize changes.');
+      return;
+    }
 
     setIsSyncing(true);
     setSyncError(null);
@@ -139,12 +148,10 @@ export default function SyncEngineManager({
 
     try {
       // Push the sync queue to the server
-      const response = await fetch('/api/sync', {
+      const response = await authorizedFetch('/api/sync', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'X-User-Role': currentUser?.role || 'Provider',
-          'X-User-Id': currentUser?.userId || 'anonymous'
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({ events: syncEvents })
       });

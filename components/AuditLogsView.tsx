@@ -6,6 +6,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { AuditLog } from '../types';
+import { authorizedFetch } from '../security';
 import { FileSpreadsheet, CheckCircle2, XCircle, AlertTriangle, RefreshCw, Eye, HelpCircle, Shield, Download, Trash, Search, X, Calendar, Filter } from 'lucide-react';
 
 interface AuditLogsViewProps {
@@ -13,6 +14,7 @@ interface AuditLogsViewProps {
   onRefresh: () => Promise<void>;
   onTriggerTamper: () => Promise<any>;
   onResetDatabase: () => Promise<void>;
+  enableSimulatorTools?: boolean;
 }
 
 // Client-side SHA-256 and hash-chain recomputation helpers
@@ -43,7 +45,8 @@ export default function AuditLogsView({
   logs,
   onRefresh,
   onTriggerTamper,
-  onResetDatabase
+  onResetDatabase,
+  enableSimulatorTools = false
 }: AuditLogsViewProps) {
   const [isVerifying, setIsVerifying] = useState(false);
   const [verificationResult, setVerificationResult] = useState<{
@@ -135,10 +138,9 @@ export default function AuditLogsView({
       for (let i = 0; i < chronological.length; i++) {
         const log = chronological[i];
 
-        // 1. Skip check or mark special for offline-pending mock logs
-        if (log.hash === 'PENDING_OFFLINE_SYNC_HASH' || log.id.startsWith('mock_log_')) {
+        if (log.hash === 'PENDING_OFFLINE_SYNC_HASH') {
           result[log.id] = {
-            verified: true,
+            verified: false,
             type: 'pending',
             reason: 'Buffered offline (Pending sync verification)'
           };
@@ -220,7 +222,7 @@ export default function AuditLogsView({
     setIsVerifying(true);
     setVerificationResult(null);
     try {
-      const response = await fetch('/api/audit-logs/verify', { method: 'POST' });
+      const response = await authorizedFetch('/api/audit-logs/verify', { method: 'POST' });
       if (response.ok) {
         const result = await response.json();
         setVerificationResult(result);
@@ -233,6 +235,8 @@ export default function AuditLogsView({
   };
 
   const handleTamperSimulation = async () => {
+    if (!enableSimulatorTools) return;
+
     try {
       const res = await onTriggerTamper();
       if (res && res.tamperedLogId) {
@@ -247,6 +251,8 @@ export default function AuditLogsView({
   };
 
   const handleReset = async () => {
+    if (!enableSimulatorTools) return;
+
     if (confirm('Re-initialize standard compliant audit chain and databases to default pristine state?')) {
       await onResetDatabase();
       setVerificationResult(null);
@@ -374,6 +380,7 @@ export default function AuditLogsView({
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Verification Controls Side panel */}
         <div className="space-y-4">
+          {enableSimulatorTools && (
           <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4 shadow-sm text-xs">
             <h3 className="font-display font-semibold text-slate-800">Compliance Audit Simulator</h3>
             <p className="text-slate-600 leading-relaxed">
@@ -396,6 +403,7 @@ export default function AuditLogsView({
               Re-Initialize System
             </button>
           </div>
+          )}
 
           <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-3.5 shadow-sm text-xs">
             <h3 className="font-display font-semibold text-slate-800">How the chain works</h3>
@@ -544,7 +552,8 @@ export default function AuditLogsView({
               filteredLogs.map((log, index) => {
                 const localStatus = localVerification[log.id];
                 const isLocalTampered = localStatus?.type === 'tampered';
-                const isCorrupted = (verificationResult && !verificationResult.verified && verificationResult.corruptedLogId === log.id) || isLocalTampered;
+                const isLocalPending = localStatus?.type === 'pending';
+                const isCorrupted = !isLocalPending && ((verificationResult && !verificationResult.verified && verificationResult.corruptedLogId === log.id) || isLocalTampered);
                 
                 const originalIndex = logs.findIndex(l => l.id === log.id);
                 const displayIndex = originalIndex !== -1 ? logs.length - originalIndex : filteredLogs.length - index;

@@ -54,6 +54,8 @@ export default function SyncEngineManager({
   } | null>(null);
 
   const backoffIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const backoffRemainingRef = useRef<number>(0);
+  const isSyncingRef = useRef(false);
 
   // Synchronize new/untracked syncEvents into our persistent syncHistory ledger
   useEffect(() => {
@@ -85,7 +87,7 @@ export default function SyncEngineManager({
       return;
     }
 
-    if (syncEvents.length > 0 && !isSyncing && backoffTimer === null) {
+    if (syncEvents.length > 0 && !isSyncing && backoffIntervalRef.current === null) {
       // Something to sync, trigger immediate sync if retryCount is 0
       if (retryCount === 0) {
         attemptSync();
@@ -94,24 +96,43 @@ export default function SyncEngineManager({
         startBackoff();
       }
     }
+
+    // Drop the interval handle so a pending retry never outlives the mount.
+    // The remaining delay is kept so the next run resumes it.
+    return () => {
+      if (backoffIntervalRef.current) {
+        clearInterval(backoffIntervalRef.current);
+        backoffIntervalRef.current = null;
+      }
+    };
   }, [syncEvents, isOnline, retryCount]);
 
   const startBackoff = () => {
+    // Exponential formula: 2^retryCount * 1000ms, resuming a delay that a
+    // re-render interrupted rather than restarting it.
+    const remaining = backoffRemainingRef.current;
     clearBackoff();
-    // Exponential formula: 2^retryCount * 1000ms
-    const delaySeconds = Math.min(30, Math.pow(2, retryCount));
+    const delaySeconds = remaining > 0 ? remaining : Math.min(30, Math.pow(2, retryCount));
     setBackoffTimer(delaySeconds);
 
+    backoffRemainingRef.current = delaySeconds;
+
+    // The countdown is driven from a ref so the fire happens outside of a state
+    // updater, which React may invoke more than once per tick.
     backoffIntervalRef.current = setInterval(() => {
-      setBackoffTimer(prev => {
-        if (prev === null) return null;
-        if (prev <= 1) {
-          clearBackoff();
-          attemptSync();
-          return null;
+      backoffRemainingRef.current -= 1;
+      if (backoffRemainingRef.current <= 0) {
+        if (isSyncingRef.current) {
+          // A push is still in flight; keep the timer armed instead of
+          // dropping this retry.
+          backoffRemainingRef.current = 1;
+          return;
         }
-        return prev - 1;
-      });
+        clearBackoff();
+        attemptSync();
+        return;
+      }
+      setBackoffTimer(backoffRemainingRef.current);
     }, 1000);
   };
 
@@ -120,14 +141,17 @@ export default function SyncEngineManager({
       clearInterval(backoffIntervalRef.current);
       backoffIntervalRef.current = null;
     }
+    backoffRemainingRef.current = 0;
     setBackoffTimer(null);
   };
 
   const attemptSync = async () => {
-    if (syncEvents.length === 0 || !isOnline) return;
+    if (syncEvents.length === 0 || !isOnline || isSyncingRef.current) return;
 
+    isSyncingRef.current = true;
     setIsSyncing(true);
     setSyncError(null);
+    let shouldRefreshCatalog = false;
 
     // Set all pending items to active status
     setSyncHistory(prev => prev.map(item => {
@@ -158,6 +182,7 @@ export default function SyncEngineManager({
       
       let newSyncEvents = [...syncEvents];
       let hasConflicts = false;
+      let hasErrors = false;
 
       const outcomes: Record<string, { status: 'success' | 'conflict' | 'error'; error?: string }> = {};
 
@@ -184,6 +209,7 @@ export default function SyncEngineManager({
           }
         } else {
           // General errors
+          hasErrors = true;
           setSyncError(`Sync event failed: ${res.error || 'Server error'}`);
           outcomes[res.eventId] = { status: 'error', error: res.error || 'Server error' };
         }
@@ -201,12 +227,21 @@ export default function SyncEngineManager({
         return item;
       }));
 
-      setSyncEvents(newSyncEvents);
-
-      if (!hasConflicts) {
-        setRetryCount(0); // Reset backoff on full success
-        await triggerServerFetch(); // Refresh local catalog
+      if (newSyncEvents.length !== syncEvents.length) {
+        setSyncEvents(newSyncEvents);
       }
+
+      if (hasErrors) {
+        // Rejected events stay queued, so escalate the backoff instead of
+        // resetting it and re-pushing them immediately.
+        setRetryCount(prev => prev + 1);
+      } else if (!hasConflicts) {
+        setRetryCount(0); // Reset backoff on full success
+      }
+
+      // Refreshed after the sync window closes so the retry scheduler sees a
+      // settled isSyncing flag in the same render as the new retryCount.
+      shouldRefreshCatalog = !hasConflicts;
 
     } catch (err: any) {
       console.error('Offline Sync error:', err);
@@ -221,7 +256,12 @@ export default function SyncEngineManager({
         return item;
       }));
     } finally {
+      isSyncingRef.current = false;
       setIsSyncing(false);
+    }
+
+    if (shouldRefreshCatalog) {
+      await triggerServerFetch(); // Refresh local catalog
     }
   };
 
@@ -263,8 +303,8 @@ export default function SyncEngineManager({
     setSyncEvents(prev => prev.map(e => e.id === event.id ? resolvedEvent : e));
     setConflictEvent(null);
     setRetryCount(0);
-    // Sync again
-    setTimeout(attemptSync, 100);
+    // The queue change re-triggers the sync effect; pushing from here would
+    // re-send the pre-resolution event captured by this render.
   };
 
   const handleResolveAcceptServer = () => {
@@ -326,8 +366,6 @@ export default function SyncEngineManager({
     setConflictEvent(null);
     setRetryCount(0);
     onLogAudit('SECURITY_ALERT', `Sync conflict resolved: Provider manually merged conflicting updates for patient ${serverPatient.name}.`);
-    // Retry
-    setTimeout(attemptSync, 100);
   };
 
   const clearSyncQueue = () => {
